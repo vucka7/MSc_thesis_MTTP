@@ -1,0 +1,678 @@
+---
+title: "smart_seq_analysis"
+output: html_document
+---
+
+Data upload:
+```{r}
+barcodes <- read.csv("barcode_annotation.txt", sep = "", header = TRUE )
+data <- readRDS("~/Documents/Sequencing/Smart_seq/Xpress.dgecounts.rds")
+plate_map <- read.csv("~/Documents/Sequencing/Smart_seq/Plate_map.csv", sep = ";", header = TRUE)
+```
+Libraries
+```{r}
+library(dplyr)
+library(ggplot2)
+library(umap)
+library(DESeq2)
+#library(ensembldb)
+#library(AnnotationHub)
+library(biomaRt)
+library(patchwork)
+```
+
+
+Filter reads for greater than 0.5 expression
+```{r}
+expression_data <- as.data.frame(data[["rpkm"]][["exon"]][["all"]]) %>%
+  filter(rowSums(.) >= 2500)
+```
+Rename columns using a mapping
+```{r}
+expression_data <- expression_data %>%
+  rename_with(~ barcodes$WellID[match(., barcodes$XC_DNBPE_TS)], .cols = everything())
+```
+
+PCA plot
+```{r}
+# Transpose so that samples are rows and genes are columnsß
+expression_transposed <- t(expression_data)
+pca_result <- prcomp(expression_transposed, scale. = TRUE)
+pca_df <- data.frame(Well = rownames(pca_result$x),  # Extract sample names
+                     PC1 = pca_result$x[,1], 
+                     PC2 = pca_result$x[,2])
+
+# Merge PCA data with category info
+pca_df <- merge(pca_df, plate_map, by = "Well")
+
+# Create PCA plot
+sample_type_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Sample_type)) +
+  geom_point(size = 3) +
+  labs(title = "PCA Plot", x = "PC1", y = "PC2") +
+  theme_minimal()
+sample_type_PCA
+```
+Making a uMAP
+```{r}
+# Run UMAP
+umap_result <- umap(expression_transposed)
+
+# Convert UMAP results into a data frame
+umap_df <- data.frame(Well = rownames(expression_transposed),
+                      UMAP1 = umap_result$layout[,1], 
+                      UMAP2 = umap_result$layout[,2])
+# Merge UMAP data with category info
+umap_df <- merge(umap_df, plate_map, by = "Well")
+
+#make the plot
+sample_type_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = Sample_type)) +
+  geom_point(size = 3) +
+  labs(title = "UMAP Plot of Gene Expression", x = "UMAP1", y = "UMAP2") +
+  theme_minimal()
+sample_type_umap
+```
+```{r}
+umap_df_filtered <- subset(umap_df, Sample_type %in% c("Blood_CSP", "BM_CSP"))
+
+sample_type_umap <- ggplot(umap_df_filtered, aes(x = UMAP1, y = UMAP2, color = Sample_type)) +
+  geom_point(size = 3) +
+  labs(x = "UMAP1", y = "UMAP2") +
+  theme_bw() +
+  scale_color_lancet()  +
+  theme(aspect.ratio = 1) # Optional if you want consistent colors
+
+sample_type_umap
+
+#save
+ggsave("~/Documents/Sequencing/Figures/umap_plot.png", plot = sample_type_umap, width = 8, height = 6)
+```
+
+#checking colSums of control columns
+```{r}
+col_sums_df <- data.frame(t(colSums(expression_data[, c("H23", "H24", "J1","J2","J3","J4","J5","J6","J7","J8","J9","J10")])))
+rowMeans(col_sums_df)
+```
+
+```{r}
+# View top genes for PC1
+# Extract loadings (gene contributions)
+loadings <- pca_result$rotation  # Each row is a gene, each column is a PC
+
+# View top genes for PC1
+top_genes_PC1 <- head(loadings[order(abs(loadings[,1]), decreasing = TRUE), ], 1000)
+print(top_genes_PC1)
+
+top_genes_list <- lapply(1:3, function(i) {
+  top_genes <- head(loadings[order(abs(loadings[,i]), decreasing = TRUE), ], 1000)
+  return(data.frame(Gene = rownames(top_genes), Contribution = top_genes[,i], PC = paste0("PC", i)))
+})
+
+top_genes_df <- do.call(rbind, top_genes_list)  # Combine results into a data frame
+print(top_genes_df)
+
+ggplot(top_genes_df, aes(x = reorder(Gene, abs(Contribution)), y = Contribution, fill = PC)) +
+  geom_bar(stat = "identity") +
+  coord_flip() + 
+  theme_minimal() +
+  labs(title = "Top Genes Contributing to PCA Variation", x = "Genes", y = "Contribution")
+
+```
+```{r}
+# View top genes for PC1
+# Extract loadings (gene contributions)
+loadings <- pca_result$rotation  # Each row is a gene, each column is a PC
+
+# View top genes for PC1
+top_genes_PC2 <- head(loadings[order(abs(loadings[,2]), decreasing = TRUE), ], 1000)
+print(top_genes_PC2)
+
+top_genes_list_PC2 <- lapply(1:3, function(i) {
+  top_genes_PC2 <- head(loadings[order(abs(loadings[,i]), decreasing = TRUE), ], 1000)
+  return(data.frame(Gene = rownames(top_genes_PC2), Contribution = top_genes_PC2[,i], PC = paste0("PC", i)))
+})
+
+top_genes_df_PC2 <- do.call(rbind, top_genes_list_PC2)  # Combine results into a data frame
+print(top_genes_df)
+
+ggplot(top_genes_df_PC2, aes(x = reorder(Gene, abs(Contribution)), y = Contribution, fill = PC)) +
+  geom_bar(stat = "identity") +
+  coord_flip() + 
+  theme_minimal() +
+  labs(title = "Top Genes Contributing to PCA Variation", x = "Genes", y = "Contribution")
+
+```
+Annotating genes from the ensembl database
+```{r}
+library(biomaRt)
+ensembl <- useEnsembl(biomart = "genes", dataset = "mfascicularis_gene_ensembl")
+gene_info <- getBM(attributes = c("ensembl_gene_id", "external_gene_name", "description"),
+                   filters = "ensembl_gene_id",
+                   values = c("ENSMFAG00000013144",	"ENSMFAG00000038421", "ENSMFAG00000008667"),
+                   mart = ensembl)
+print(gene_info)
+```
+```{r}
+ensembl <- useEnsembl(biomart = "genes", dataset = "mfascicularis_gene_ensembl")
+# View the available GO terms for B cell-related processes
+go_terms <- c("GO:0006955")  # Example GO terms for immune response
+# Fetch genes related to the specified GO terms
+bcell_genes <- getBM(attributes = c("ensembl_gene_id", "external_gene_name", "description"),
+                     filters = "go_parent_term",  # Use GO term to filter
+                     values = go_terms,  # Provide the GO term(s)
+                     mart = ensembl)
+listFilters(ensembl)
+# View the results
+print(bcell_genes)
+```
+```{r}
+matched_genes <- merge(top_genes_list[[1]], bcell_genes, by.x = "Gene", by.y = "ensembl_gene_id")
+
+```
+Try PCA for WASP
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+wasp_expression <- t(expression_data["ENSMFAG00000034169", ])  # if 'WASP' is the gene name
+pca_result <- prcomp(t(expression_data), scale. = TRUE)
+# Create a data frame with the PCA results
+pca_df <- as.data.frame(pca_result$x)
+
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$WASP_expression <- wasp_expression
+
+# Load ggplot2 package
+library(ggplot2)
+
+# Create the PCA plot with coloring by WASP expression
+ggplot(pca_df, aes(x = PC1, y = PC2, color = WASP_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by WASP Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+```
+uMAP
+```{r}
+# Transpose the expression data (samples as rows, genes as columns)
+expression_transposed <- t(expression_data)
+
+# Perform UMAP
+umap_result <- umap(expression_transposed)
+# Create a data frame for plotting
+umap_df <- as.data.frame(umap_result$layout)
+colnames(umap_df) <- c("UMAP1", "UMAP2")
+
+wasp_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = wasp_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP Colored by WASP Expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+wasp_expresion_umap
+```
+
+B cell specific genes
+-CD19
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+CD19_expression <- t(expression_data["ENSMFAG00000003219", ])  # if 'WASP' is the gene name
+pca_result <- prcomp(t(expression_data), scale. = TRUE)
+# Create a data frame with the PCA results
+pca_df <- as.data.frame(pca_result$x)
+
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$CD19_expression <- CD19_expression
+
+# Create the PCA plot with coloring by WASP expression
+CD19_PCA <-ggplot(pca_df, aes(x = PC1, y = PC2, color = CD19_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by CD19 Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+uMAP
+```{r}
+# Perform UMAP
+umap_result <- umap(expression_transposed)
+# Create a data frame for plotting
+umap_df <- as.data.frame(umap_result$layout)
+colnames(umap_df) <- c("UMAP1", "UMAP2")
+
+CD19_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = CD19_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP Colored by CD19 Expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+CD19_expresion_umap
+```
+-IGHM
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+IGHM_expression <- t(expression_data["ENSMFAG00000054250", ])  # if 'WASP' is the gene name
+pca_result <- prcomp(t(expression_data), scale. = TRUE)
+# Create a data frame with the PCA results
+pca_df <- as.data.frame(pca_result$x)
+
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$IGHM_expression <- IGHM_expression
+
+# Create the PCA plot with coloring by WASP expression
+IGHM_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = IGHM_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by IGHM Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+uMAP
+```{r}
+# Perform UMAP
+umap_result <- umap(expression_transposed)
+# Create a data frame for plotting
+umap_df <- as.data.frame(umap_result$layout)
+colnames(umap_df) <- c("UMAP1", "UMAP2")
+
+IGHM_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = IGHM_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP Colored by IGHM Expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+IGHM_expresion_umap
+```
+CD3D
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+CD3D_expression <- t(expression_data["ENSMFAG00000045644", ])  # if 'WASP' is the gene name
+pca_result <- prcomp(t(expression_data), scale. = TRUE)
+# Create a data frame with the PCA results
+pca_df <- as.data.frame(pca_result$x)
+
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$CD3D_expression <- CD3D_expression
+
+# Create the PCA plot with coloring by WASP expression
+CD3D_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD3D_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by CD3D Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+
+CD3E
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+CD3E_expression <- t(expression_data["ENSMFAG00000040556", ])  
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$CD3E_expression <- CD3E_expression
+
+# Create the PCA plot with coloring by WASP expression
+CD3E_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD3E_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by CD3E Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+CD3G
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+CD3G_expression <- t(expression_data["ENSMFAG00000040063", ])  
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$CD3G_expression <- CD3E_expression
+
+# Create the PCA plot with coloring by WASP expression
+CD3G_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD3G_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by CD3G Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+CD40
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+CD40_expression <- t(expression_data["ENSMFAG00000032922", ])  
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$CD40_expression <- CD40_expression
+
+# Create the PCA plot with coloring by WASP expression
+CD40_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD40_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by CD40 Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+uMAP
+```{r}
+# Perform UMAP
+umap_result <- umap(expression_transposed)
+# Create a data frame for plotting
+umap_df <- as.data.frame(umap_result$layout)
+colnames(umap_df) <- c("UMAP1", "UMAP2")
+
+CD40_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = CD40_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP Colored by CD40 Expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+CD40_expresion_umap
+```
+CXCR3
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+CXCR3_expression <- t(expression_data["ENSMFAG00000031295", ])  
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$CXCR3_expression <- CXCR3_expression
+
+# Create the PCA plot with coloring by WASP expression
+CXCR3_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CXCR3_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by CD3G Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+uMAP
+```{r}
+CXCR3_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = CXCR3_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP colored by CXCR3 Expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+CXCR3_expresion_umap
+```
+CXCR4
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+CXCR4_expression <- t(expression_data["ENSMFAG00000037063", ])  
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$CXCR4_expression <- CXCR4_expression
+
+# Create the PCA plot with coloring by WASP expression
+CXCR4_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CXCR4_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by CXCR4 Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+uMAP
+```{r}
+CXCR4_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = CXCR4_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP colored by CXCR3 Expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+CXCR4_expresion_umap
+```
+CD80
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+CD80_expression <- t(expression_data["ENSMFAG00000032987", ])  
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$CD80_expression <- CD80_expression
+
+# Create the PCA plot with coloring by WASP expression
+CD80_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD80_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by CD80 Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+uMAP
+```{r}
+CD80_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = CD80_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP colored by CD80 expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+CD80_expresion_umap
+```
+CCR6
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+CCR6_expression <- t(expression_data["ENSMFAG00000062524", ])  
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$CCR6_expression <- CCR6_expression
+
+# Create the PCA plot with coloring by WASP expression
+CCR6_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CCR6_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot colored by CCR6 expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+uMAP
+```{r}
+CCR6_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = CCR6_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP colored by CCR6 expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+CCR6_expresion_umap
+```
+JCHAIN
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+JCHAIN_expression <- t(expression_data["ENSMFAG00000065046", ])  
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$JCHAIN_expression <- JCHAIN_expression
+
+# Create the PCA plot with coloring by WASP expression
+JCHAIN_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = JCHAIN_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA plot colored by JCHAIN expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+uMAP
+```{r}
+JCHAIN_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = JCHAIN_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP colored by CCR6 expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+JCHAIN_expresion_umap
+```
+AICDA
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+AICDA_expression <- t(expression_data["ENSMFAG00000064606", ])  
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$AICDA_expression <- AICDA_expression
+
+# Create the PCA plot with coloring by WASP expression
+AICDA_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = AICDA_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA plot colored by AICDA expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+uMAP
+```{r}
+AICDA_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = AICDA_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP colored by AICDA expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+AICDA_expresion_umap
+```
+All plots on the same figure
+```{r}
+#PCA plots
+all_PCA_plots <- (CD19_PCA | IGHM_PCA | CD3D_PCA) / (CD3E_PCA | CD3G_PCA | CD40_PCA) / (CXCR3_PCA | CXCR4_PCA | CD80_PCA) / (CCR6_PCA | JCHAIN_PCA |AICDA_PCA) +
+  plot_layout(guides = "collect") & theme(legend.position = "right")
+all_PCA_plots
+```
+```{r}
+#PCA plots
+PCA_plots <- (CD19_PCA | IGHM_PCA | CD40_PCA) / (CXCR3_PCA | CXCR4_PCA | CD80_PCA) / (CCR6_PCA | JCHAIN_PCA |AICDA_PCA) +
+  plot_layout(guides = "collect") & theme(legend.position = "none")
+PCA_plots
+```
+uMAP
+```{r}
+#PCA plots
+umap_plots <- (CD19_expresion_umap | IGHM_expresion_umap | CD40_expresion_umap) / (CXCR3_expresion_umap | CXCR4_expresion_umap | CD80_expresion_umap) / (CCR6_expresion_umap | JCHAIN_expresion_umap |AICDA_expresion_umap) +
+  plot_layout(guides = "collect") & theme(legend.position = "none")
+umap_plots
+```
+
+PCA and umap for only blood CSP and BM CSP
+```{r}
+# Filter the sample IDs in df_sample_types for 'blood' or 'bone marrow'
+filtered_plate_map <- plate_map %>%
+  filter(Sample_type %in% c("Blood_CSP", "BM_CSP")) %>%
+  pull(Well)
+
+# Subset the df_gene_counts dataframe based on the filtered sample IDs
+CSP_expression_transposed<- as.data.frame(expression_transposed) %>%
+  filter(rownames(expression_transposed) %in% filtered_plate_map)
+
+  
+#filter if rownames(expression_transposed) are of Sample_type Blood_CSP and BM_CSP
+# Calculate the variance of each column
+column_variances <- apply(CSP_expression_transposed, 2, var)
+
+# Identify columns with zero variance
+constant_columns <- which(column_variances == 0)
+
+# Remove the constant columns
+CSP_expression_transposed_filtered <- CSP_expression_transposed[, -constant_columns]
+
+# Now run PCA on the filtered data
+CSP_pca_result <- prcomp(CSP_expression_transposed_filtered, scale. = TRUE)
+
+CSP_pca_result <- prcomp(CSP_expression_transposed_filtered, scale. = TRUE)
+CSP_pca_df <- data.frame(Well = rownames(CSP_pca_result$x),  # Extract sample names
+                     PC1 = CSP_pca_result$x[,1], 
+                     PC2 = CSP_pca_result$x[,2])
+
+# Merge PCA data with category info
+CSP_pca_df <- merge(CSP_pca_df, plate_map, by = "Well")
+
+# Create PCA plot
+CSP_sample_type_PCA <- ggplot(CSP_pca_df, aes(x = PC1, y = PC2, color = Sample_type)) +
+  geom_point(size = 3) +
+  labs(title = "PCA Plot", x = "PC1", y = "PC2") +
+  theme_minimal()
+CSP_sample_type_PCA
+```
+uMAP for CSP-specific only
+```{r}
+# Run UMAP
+CSP_umap_result <- umap(CSP_expression_transposed)
+
+# Convert UMAP results into a data frame
+CSP_umap_df <- data.frame(Well = rownames(CSP_expression_transposed),
+                      UMAP1 = CSP_umap_result$layout[,1], 
+                      UMAP2 = CSP_umap_result$layout[,2])
+# Merge UMAP data with category info
+CSP_umap_df <- merge(CSP_umap_df, plate_map, by = "Well")
+
+#make the plot
+CSP_sample_type_umap <- ggplot(CSP_umap_df, aes(x = UMAP1, y = UMAP2, color = Sample_type)) +
+  geom_point(size = 3) +
+  labs(title = "UMAP Plot of Gene Expression", x = "UMAP1", y = "UMAP2") +
+  theme_minimal()
+CSP_sample_type_umap
+```
+B cell specific genes
+-CD19
+```{r}
+CSP_expression_data <- t(CSP_expression_transposed_filtered)
+CSP_CD19_expression <- CSP_expression_data["ENSMFAG00000003219", ]  # if 'WASP' is the gene name
+
+# Add the expression values of WASP as a column to the PCA data frame
+CSP_pca_df$CD19_expression <- CSP_CD19_expression
+
+# Create the PCA plot with coloring by WASP expression
+CSP_CD19_PCA <-ggplot(CSP_pca_df, aes(x = PC1, y = PC2, color = CSP_CD19_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "CD19 Expression for CSP only", x = "PC1", y = "PC2") +
+  theme_minimal()
+CSP_CD19_PCA
+```
+uMAP
+```{r}
+
+CSP_CD19_expresion_umap <- ggplot(CSP_umap_df, aes(x = UMAP1, y = UMAP2, color = CSP_CD19_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP Colored by CD19 Expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+CSP_CD19_expresion_umap
+```
+-IGHM (do this for the rest of the graphs!!!)
+```{r}
+# Extract the expression of the WASP gene (replace 'WASP' with the actual gene name or ID in your dataset)
+IGHM_expression <- t(expression_data["ENSMFAG00000054250", ])  # if 'WASP' is the gene name
+pca_result <- prcomp(t(expression_data), scale. = TRUE)
+# Create a data frame with the PCA results
+pca_df <- as.data.frame(pca_result$x)
+
+# Add the expression values of WASP as a column to the PCA data frame
+pca_df$IGHM_expression <- IGHM_expression
+
+# Create the PCA plot with coloring by WASP expression
+IGHM_PCA <- ggplot(pca_df, aes(x = PC1, y = PC2, color = IGHM_expression)) +
+  geom_point(size = 1) +  # You can adjust the size of the points
+  scale_color_gradient(low = "blue", high = "red") +  # Set color scale (you can adjust colors)
+  labs(title = "PCA Plot Colored by IGHM Expression", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+uMAP
+```{r}
+# Perform UMAP
+umap_result <- umap(expression_transposed)
+# Create a data frame for plotting
+umap_df <- as.data.frame(umap_result$layout)
+colnames(umap_df) <- c("UMAP1", "UMAP2")
+
+IGHM_expresion_umap <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = IGHM_expression)) +
+  geom_point(size = 3) +  # Scatter plot with points sized at 3
+  scale_color_gradient(low = "blue", high = "red") +  # Color scale (adjust as needed)
+  labs(title = "UMAP Colored by IGHM Expression", x = "UMAP 1", y = "UMAP 2") +
+  theme_minimal()
+
+IGHM_expresion_umap
+```
+Try to map in regards to IGH expression
+```{r}
+library(dplyr)
+library(tibble)
+
+IGH_data_smartseq <- read.csv("~/Documents/Sequencing/Smart_seq/BCR_analysis/smartseq_airr.tsv", sep = "\t")
+#Filter for onlyIGH
+IGH_data_smartseq <- IGH_data_smartseq %>%
+  filter(grepl("IGH", locus)) %>%
+  mutate(WellID = sub("_.*", "", sequence_id)) %>%
+  mutate(v_family = sub("-.*", "", v_call)) %>%
+  mutate(d_family = sub("-.*", "", d_call)) %>%
+  mutate(j_family = sub("-.*", "", j_call))
+
+expression_transposed_for_IGH <- as.data.frame(expression_transposed) %>%
+    rownames_to_column(var = "WellID")%>%
+    left_join( IGH_data_smartseq, by = "WellID") 
+
+uMAP_expression_transposed_for_IGH <- expression_transposed_for_IGH %>%
+    dplyr::select(where(is.numeric))
+
+# Run UMAP
+umap_result <- umap(uMAP_expression_transposed_for_IGH )
+
+# Combine UMAP results with metadata
+umap_df <- as.data.frame(umap_result$layout) %>%
+  mutate(
+    WellID = expression_transposed_for_IGH$WellID,
+    v_family = expression_transposed_for_IGH$v_family
+  )
+colnames(umap_df)[1:2] <- c("UMAP1", "UMAP2")
+
+```
+

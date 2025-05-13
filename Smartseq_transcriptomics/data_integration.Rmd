@@ -1,0 +1,174 @@
+---
+title: "data_integration"
+output: html_document
+---
+
+Loading libraries
+```{r}
+suppressPackageStartupMessages({
+    library(scater)
+    library(scran)
+    library(patchwork)
+    library(ggplot2)
+    library(batchelor)
+    library(harmony)
+    library(basilisk)
+})
+```
+Getting data
+```{r}
+sce <- readRDS("~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/dr_filtered_raw_data_250324.rds")
+```
+Log-normalisation
+- We split the combined object into a list, with each dataset as an element. We perform standard preprocessing (log-normalization), and identify variable features individually for each dataset based on a variance stabilizing transformation (vst).
+```{r}
+var.out <- modelGeneVar(sce, block = sce$sample_group)
+hvgs <- getTopHVGs(var.out, n = 2000)
+
+var.out.nobatch <- modelGeneVar(sce)
+hvgs.nobatch <- getTopHVGs(var.out.nobatch, n = 2000)
+
+# the var out with block has a data frame of data frames in column 7. 
+# one per dataset.
+hvgs_per_dataset <- lapply(var.out[[7]], getTopHVGs, n=2000)
+                           
+hvgs_per_dataset$all = hvgs
+hvgs_per_dataset$all.nobatch = hvgs.nobatch
+
+
+
+
+temp <- unique(unlist(hvgs_per_dataset))
+overlap <- sapply(hvgs_per_dataset, function(x) {
+    temp %in% x
+})
+```
+Making a heatmap
+```{r}
+pheatmap::pheatmap(t(overlap * 1), cluster_rows = F, color = c("grey90", "grey20")) ## MNN
+```
+Storing metadata for variable gene information
+```{r}
+metadata(sce)$hvgs = hvgs
+```
+fastMNN
+- The mutual nearest neighbors (MNN) approach within the scran package utilizes a novel approach to adjust for batch effects. The fastMNN() function returns a representation of the data with reduced dimensionality, which can be used in a similar fashion to other lower-dimensional representations such as PCA. In particular, this representation can be used for downstream methods such as clustering. The BNPARAM can be used to specify the specific nearest neighbors method to use from the BiocNeighbors package. Here we make use of the Annoy library via the BiocNeighbors::AnnoyParam() argument. We save the reduced-dimension MNN representation into the reducedDims slot of our sce object.
+```{r}
+mnn_out <- batchelor::fastMNN(sce, subset.row = hvgs, batch = factor(sce$sample_group), k = 20, d = 50)
+```
+We will take the reduced dimension in the new mnn_out object and add it into the original sce object.
+```{r}
+mnn_dim <- reducedDim(mnn_out, "corrected")
+reducedDim(sce, "MNN") <- mnn_dim
+```
+a new assay slot was created under name MNN
+```{r}
+reducedDims(sce)
+```
+the result from fastMNN() should solely be treated as a reduced dimensionality representation, suitable for direct plotting, TSNE/UMAP, clustering, and trajectory analysis that relies on such results.
+```{r}
+set.seed(42)
+sce <- runTSNE(sce, dimred = "MNN", n_dimred = 50, perplexity = 30, name = "tSNE_on_MNN")
+sce <- runUMAP(sce, dimred = "MNN", n_dimred = 50, ncomponents = 2, name = "UMAP_on_MNN")
+```
+Plotting the unintegrated and integrated space reduced dimensions
+```{r}
+wrap_plots(
+    plotReducedDim(sce, dimred = "PCA", colour_by = "sample_group", point_size = 0.6) + ggplot2::ggtitle(label = "PCA"),
+    plotReducedDim(sce, dimred = "tSNE_on_PCA", colour_by = "sample_group", point_size = 0.6) + ggplot2::ggtitle(label = "tSNE_on_PCA"),
+    plotReducedDim(sce, dimred = "UMAP_on_PCA", colour_by = "sample_group", point_size = 0.6) + ggplot2::ggtitle(label = "UMAP_on_PCA"),
+    plotReducedDim(sce, dimred = "MNN", colour_by = "sample_group", point_size = 0.6) + ggplot2::ggtitle(label = "MNN"),
+    plotReducedDim(sce, dimred = "tSNE_on_MNN", colour_by = "sample_group", point_size = 0.6) + ggplot2::ggtitle(label = "tSNE_on_MNN"),
+    plotReducedDim(sce, dimred = "UMAP_on_MNN", colour_by = "sample_group", point_size = 0.6) + ggplot2::ggtitle(label = "UMAP_on_MNN"),
+    ncol = 3
+) + plot_layout(guides = "collect")
+```
+```{r}
+sce_filtered <- sce[, !is.na(sce$v_family_H)]
+wrap_plots(
+  plotReducedDim(sce_filtered, dimred = "PCA", colour_by = "v_family_H", point_size = 0.6) + ggtitle("PCA"),
+  plotReducedDim(sce_filtered, dimred = "tSNE_on_PCA", colour_by = "v_family_H", point_size = 0.6) + ggtitle("tSNE_on_PCA"),
+  plotReducedDim(sce_filtered, dimred = "UMAP_on_PCA", colour_by = "v_family_H", point_size = 0.6) + ggtitle("UMAP_on_PCA"),
+  plotReducedDim(sce_filtered, dimred = "MNN", colour_by = "v_family_H", point_size = 0.6) + ggtitle("MNN"),
+  plotReducedDim(sce_filtered, dimred = "tSNE_on_MNN", colour_by = "v_family_H", point_size = 0.6) + ggtitle("tSNE_on_MNN"),
+  plotReducedDim(sce_filtered, dimred = "UMAP_on_MNN", colour_by = "v_family_H", point_size = 0.6) + ggtitle("UMAP_on_MNN"),
+  ncol = 3
+) + plot_layout(guides = "collect")
+
+```
+
+```{r}
+plotlist <- list()
+for (i in c("CD19", "IGHM", "CD40", "CXCR3", "CXCR4",
+    "CD80", "CCR6", "JCHAIN", "AICDA")) {
+    plotlist[[i]] <- plotReducedDim(sce, dimred = "UMAP_on_MNN", colour_by = i, by_exprs_values = "logcounts", point_size = 0.6) +
+        scale_fill_gradientn(colours = colorRampPalette(c("grey90", "orange3", "firebrick", "firebrick", "red", "red"))(10)) +
+        ggtitle(label = i) + theme(plot.title = element_text(size = 20))
+}
+wrap_plots(plotlist = plotlist, ncol = 3)
+
+# **Add UMAP plot colored by Sample Type**
+plotlist[["Sample Types"]] <- plotReducedDim(sce, dimred = "UMAP_on_MNN", 
+                                             colour_by = "sample_group", # Change to your sample type column
+                                             point_size = 0.6) +
+    ggtitle(label = "Sample Types") + 
+    theme(plot.title = element_text(size = 20))
+
+# **Add UMAP plot colored by v_family_H** 
+plotlist[["v_family_H"]] <- plotReducedDim(sce, dimred = "UMAP_on_MNN", 
+                                             colour_by = "v_family_H", # Change to your sample type column
+                                             point_size = 0.6) +
+    ggtitle(label = "v_family_H") + 
+    theme(plot.title = element_text(size = 20))
+
+# **Combine all plots into one figure**
+wrap_plots(plotlist = plotlist, ncol = 3)
+```
+Harmony
+-alternative method for data integration
+```{r}
+reducedDimNames(sce)
+sce <- RunHarmony(
+    sce,
+    group.by.vars = "sample_group",
+    reduction.save = "harmony",
+    reduction = "PCA",
+    dims.use = 1:50
+)
+
+# Here we use all PCs computed from Harmony for UMAP calculation
+sce <- runUMAP(sce, dimred = "harmony", n_dimred = 50, ncomponents = 2, name = "UMAP_on_Harmony")
+
+plotReducedDim(sce, dimred = "UMAP_on_Harmony", colour_by = "sample_group", point_size = 0.6) + ggplot2::ggtitle(label = "UMAP_on_Harmony")
+```
+umap by harmony for v_family_H
+```{r}
+reducedDimNames(sce)
+sce <- RunHarmony(
+    sce,
+    group.by.vars = "sample_group",
+    reduction.save = "harmony",
+    reduction = "PCA",
+    dims.use = 1:50
+)
+
+# Here we use all PCs computed from Harmony for UMAP calculation
+sce <- runUMAP(sce, dimred = "harmony", n_dimred = 50, ncomponents = 2, name = "UMAP_on_Harmony")
+
+plotReducedDim(sce, dimred = "UMAP_on_Harmony", colour_by = "v_family_L", point_size = 0.6) + ggplot2::ggtitle(label = "UMAP_on_Harmony")
+```
+Overview of methods (skipping scanorama)
+```{r}
+p1 <- plotReducedDim(sce, dimred = "UMAP_on_PCA", colour_by = "sample_group", point_size = 0.6) + ggplot2::ggtitle(label = "UMAP_on_PCA")
+p2 <- plotReducedDim(sce, dimred = "UMAP_on_MNN", colour_by = "sample_group", point_size = 0.6) + ggplot2::ggtitle(label = "UMAP_on_MNN")
+p3 <- plotReducedDim(sce, dimred = "UMAP_on_Harmony", colour_by = "sample_group", point_size = 0.6) + ggplot2::ggtitle(label = "UMAP_on_Harmony")
+
+
+wrap_plots(p1, p2, p3, nrow = 2) +
+    plot_layout(guides = "collect")
+```
+Saving integrated data
+```{r}
+saveRDS(sce, "~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/integrated_data_250323.rds")
+```
+

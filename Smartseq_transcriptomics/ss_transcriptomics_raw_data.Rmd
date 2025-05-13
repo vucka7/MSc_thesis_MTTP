@@ -1,0 +1,205 @@
+---
+title: "ss_transcriptomics_raw_data"
+output: html_document
+---
+Libraries
+```{r}
+library(SingleCellExperiment)
+library(Matrix)
+library(biomaRt)
+#install.packages("perCellQCMetrics")
+#library(perCellQCMetrics)
+library(scater)
+library(patchwork)
+library(dplyr)
+library(scran)
+library(scDblFinder)
+library(org.Mm.eg.db)
+library(AnnotationDbi)
+```
+
+Loading data
+```{r}
+data <- readRDS("~/Documents/Sequencing/Smart_seq/Xpress.dgecounts.rds")
+sce <- SingleCellExperiment(assays = list(counts = data[["readcount"]][["exon"]][["all"]]))
+head(counts(sce)[, 1:10])
+barcodes <- read.csv("~/Documents/Sequencing/Smart_seq/barcode_annotation.txt", sep = "", header = TRUE )
+plate_map <- read.csv("~/Documents/Sequencing/Smart_seq/Plate_map.csv", sep = ";", header = TRUE)
+family_allocation <- readRDS("/Users/evaro/Documents/Sequencing/Smart_seq/family_allocation.rds")
+plate_map <- plate_map %>%
+  full_join(family_allocation, by = "Well")
+```
+
+```{r}
+# Extract current barcodes from the counts matrix
+old_barcodes <- sce@assays@data@listData[["counts"]]@Dimnames[[2]]
+
+# Create a named vector for mapping (old barcode -> new name)
+name_map <- setNames(barcodes$WellID, barcodes$XC_DNBPE_TS)
+
+# Replace old barcodes with new names
+new_barcodes <- name_map[old_barcodes]
+
+# Check for missing mappings
+missing <- is.na(new_barcodes)
+if (any(missing)) {
+    warning("Some barcodes were not found in the dictionary and will remain unchanged.")
+    new_barcodes[missing] <- old_barcodes[missing]  # Keep original names if missing
+}
+
+# Update barcodes in the SingleCellExperiment object
+sce@assays@data@listData[["counts"]]@Dimnames[[2]] <- new_barcodes
+
+```
+Adding sample groups and V_gene family types to data
+```{r}
+head(plate_map)
+colnames(sce)
+heads(barcodes)
+# Create a named vector for mapping barcodes to sample names
+barcode_to_name <- setNames(barcodes$WellID, barcodes$XC_DNBPE_TS)
+
+# Update colnames(sce) by matching barcodes with sample names
+colnames(sce) <- barcode_to_name[colnames(sce)]
+colnames(sce)
+rownames(sce)
+rownames(plate_map) <- plate_map$Well
+plate_map <- plate_map[colnames(sce), ]
+sce$sample_group <- plate_map$Sample_type
+sce$v_family_H <- plate_map$v_family_H
+sce$d_family_H <- plate_map$d_family_H
+sce$j_family_H <- plate_map$j_family_H
+sce$v_family_L <- plate_map$v_family_L
+sce$j_family_L <- plate_map$j_family_L
+View(sce$sample_group)
+View(sce$j_family_H)
+
+# Check the updated matrix
+saveRDS(sce, "~/Documents/Sequencing/Smart_seq/BCR_analysis/sce_adjusted.rds")
+```
+
+Annotating genes
+```{r}
+# Connect to Ensembl database
+ensembl <- useEnsembl(biomart = "genes", dataset = "mfascicularis_gene_ensembl")
+#Retrieve gene symbols for Ensembl IDs in your dataset
+gene_annotations <- getBM(
+  attributes = c("ensembl_gene_id", "external_gene_name"),
+  values = rownames(sce),
+  mart = ensembl
+)
+saveRDS(gene_annotations, "~/Documents/Sequencing/Smart_seq/BCR_analysis/gene_annotations_backup.rds")
+
+gene_annotations <- readRDS("~/Documents/Sequencing/Smart_seq/BCR_analysis/gene_annotations_backup.rds")
+# Replace Ensembl IDs with Gene Names (keep original if not found)
+gene_annotations <- gene_annotations %>%
+  filter(external_gene_name != "")
+
+new_names <- ifelse(rownames(sce) %in% gene_annotations$ensembl_gene_id,
+                    gene_annotations$external_gene_name[match(rownames(sce), gene_annotations$ensembl_gene_id)],
+                    rownames(sce))  # Keep original if not found
+
+rownames(sce) <- new_names
+
+# Check the updated matrix
+head(counts(sce)[, 1:10])
+
+
+
+```
+Quality control
+SingleCellExperiment
+```{r}
+# Mitochondrial genes
+mito_genes <- rownames(sce)[grep("^MT-", rownames(sce))]
+# Ribosomal genes
+ribo_genes <- rownames(sce)[grep("^RP[SL]", rownames(sce))]
+# Hemoglobin genes - includes all genes starting with HB except HBP.
+hb_genes <- rownames(sce)[grep("^HB[^(P|E|S)]", rownames(sce))]
+
+sce <- addPerCellQC(sce, flatten = T, subsets = list(mt = mito_genes, hb = hb_genes, ribo = ribo_genes))
+head(colData(sce))
+# total is total UMIs per cell
+# detected is number of detected genes.
+# the different gene subset percentages are listed as subsets_mt_percent etc.
+head(sce)
+colnames(colData(sce))
+
+wrap_plots(
+    plotColData(sce, y = "detected", x = "sample_group", colour_by = "sample_group"),
+    plotColData(sce, y = "total", x = "sample_group", colour_by = "sample_group"),
+    plotColData(sce, y = "subsets_mt_percent", x = "sample_group", colour_by = "sample_group"),
+    plotColData(sce, y = "subsets_ribo_percent", x = "sample_group", colour_by = "sample_group"),
+    plotColData(sce, y = "subsets_hb_percent", x = "sample_group", colour_by = "sample_group"),
+    ncol = 3
+) + plot_layout(guides = "collect")
+
+```
+```{r}
+plotColData(sce, x = "total", y = "detected", colour_by = "sample_group")
+```
+Filtering outliers
+```{r}
+dim(sce)
+selected_c <- colnames(sce)[sce$detected > 200]
+selected_f <- rownames(sce)[Matrix::rowSums(counts(sce)) > 3]
+
+sce.filt <- sce[selected_f, selected_c]
+dim(sce.filt)
+```
+See which genes contribute the most to reads
+```{r}
+# Compute the relative expression of each gene per cell
+# Use sparse matrix operations, if your dataset is large, doing matrix devisions the regular way will take a very long time.
+C <- counts(sce.filt)
+C@x <- C@x / rep.int(colSums(C), diff(C@p)) * 100
+most_expressed <- order(Matrix::rowSums(C), decreasing = T)[20:1]
+boxplot(as.matrix(t(C[most_expressed, ])), cex = .1, las = 1, xlab = "% total count per cell", col = scales::hue_pal()(20)[20:1], horizontal = TRUE)
+#rm(C)
+```
+Mito/Ribo filtering
+```{r}
+selected_mito <- sce.filt$subsets_mt_percent < 20
+selected_ribo <- sce.filt$subsets_ribo_percent > 5
+
+# and subset the object to only keep those cells
+sce.filt <- sce.filt[, selected_mito & selected_ribo]
+dim(sce.filt)
+```
+QC plots
+```{r}
+wrap_plots(
+    plotColData(sce.filt, y = "detected", x = "sample_group", colour_by = "sample_group"),
+    plotColData(sce.filt, y = "total", x = "sample_group", colour_by = "sample_group"),
+    plotColData(sce.filt, y = "subsets_mt_percent", x = "sample_group", colour_by = "sample_group"),
+    plotColData(sce.filt, y = "subsets_ribo_percent", x = "sample_group", colour_by = "sample_group"),
+    plotColData(sce.filt, y = "subsets_hb_percent", x = "sample_group", colour_by = "sample_group"),
+    ncol = 3
+) + plot_layout(guides = "collect")
+```
+
+Filtering genes
+```{r}
+# Filter MALAT1
+#sce.filt <- sce.filt[!grepl("MALAT1", rownames(sce.filt)), ]
+
+# Filter Mitocondrial
+sce.filt <- sce.filt[!grepl("^MT-", rownames(sce.filt)), ]
+
+# Filter Ribossomal gene (optional if that is a problem on your data)
+# sce.filt <- sce.filt[ ! grepl("^RP[SL]", rownames(sce.filt)), ]
+
+# Filter Hemoglobin gene  (optional if that is a problem on your data)
+sce.filt <- sce.filt[!grepl("^HB[^(P|E|S)]", rownames(sce.filt)), ]
+
+dim(sce.filt)
+```
+
+Save data
+```{r}
+saveRDS(sce.filt,"~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/filtered_raw_data_250324.rds")
+```
+
+
+
+
