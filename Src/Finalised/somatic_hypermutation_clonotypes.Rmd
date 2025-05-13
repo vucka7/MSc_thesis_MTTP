@@ -1,0 +1,66 @@
+---
+title: "somatic_hypermutation_clonotypes"
+output: html_document
+---
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+Data
+```{r}
+all_sanger_data <- read.csv("~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/clonotypes/clonotypes_with_5013.tsv", sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+
+all_sanger_data$method <- "sanger"
+all_sanger_data <- all_sanger_data %>%
+  mutate(v_call_gene = gsub("\\*.*", "", v_call))%>%
+  select(v_call_gene, V_SHM, method)
+
+```
+
+Plotting somatic hypermutation between between different V genes
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Filter the relevant subsets
+df_33 <- all_sanger_data %>%
+  filter(v_call_gene == "IGHV3-50") %>%
+  mutate(group = "IGHV3-50")
+
+df_nl <- all_sanger_data %>%
+  filter(v_call_gene == "IGHV3-NL_17") %>%
+  mutate(group = "IGHV3-NL_17")
+
+df_all <- all_sanger_data %>%
+  filter(v_call_gene != "IGHV3-50" & v_call_gene != "IGHV3-NL_17") %>%
+  mutate(group = "All")
+
+# Combine them
+plot_data <- bind_rows(df_33, df_nl, df_all)
+
+comparisons <- list(
+  c("IGHV3-50", "All"),
+  c("IGHV3-NL_17", "All"),
+  c("IGHV3-50", "IGHV3-NL_17")
+)
+
+ggplot(plot_data, aes(x = group, y = V_SHM, fill = group)) +
+  geom_boxplot() +
+  stat_compare_means(comparisons = comparisons, method = "wilcox.test", label = "p.format") +
+  scale_fill_lancet() +
+  labs(
+    title = "V_SHM of NANP-binding antibodies",
+    x = "V-gene",
+    y = "V_SHM",
+    legend = "none"
+  ) +
+  theme_bw() +
+  theme(aspect.ratio = 1,
+        legend.position = "none" )
+
+# Save the plot
+ggsave("~/Documents/Sequencing/Somatic_hypermutation/V_SHM_boxplot_clonotypes.png", width = 8, height = 6, dpi = 300)
+```

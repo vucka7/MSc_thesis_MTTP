@@ -1,0 +1,338 @@
+---
+title: "ss_transcriptomics_dimensionality_reduction"
+output: html_document
+---
+
+Loading libraries
+```{r}
+suppressPackageStartupMessages({
+    library(scater)
+    library(scran)
+    library(patchwork)
+    library(ggplot2)
+    library(umap)
+    library(SummarizedExperiment)
+    library(SingleCellExperiment)
+})
+```
+Load data
+```{r}
+sce <- readRDS("~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/filtered_raw_data_250324.rds")
+```
+
+
+Feature selection
+```{r}
+sce <- computeSumFactors(sce, sizes = c(20, 40, 60, 80))
+sce <- logNormCounts(sce)
+var.out <- modelGeneVar(sce, block = sce$sample_group) 
+hvgs <- getTopHVGs(var.out, n = 2000)
+```
+Plotting total variance and biological variance vs mean of expression
+```{r}
+par(mfrow = c(1, 2))
+# plot mean over TOTAL variance
+# Visualizing the fit:
+fit.var <- metadata(var.out$per.block[[1]])
+{
+    plot(fit.var$mean, fit.var$var,
+        xlab = "Mean of log-expression",
+        ylab = "Variance of log-expression",
+        main = "Total variance"
+    )
+    curve(fit.var$trend(x), col = "dodgerblue", add = TRUE, lwd = 2)
+
+    # Select 1000 top variable genes
+    hvg.out <- getTopHVGs(var.out, n = 1000)
+
+    # highligt those cells in the plot
+    cutoff <- rownames(var.out) %in% hvg.out
+    points(fit.var$mean[cutoff], fit.var$var[cutoff], col = "red", pch = 16, cex = .6)
+}
+
+{
+    # plot mean over BIOLOGICAL variance for same sample
+    plot(var.out$mean, var.out$bio, pch = 16, cex = 0.4, 
+         xlab = "Mean log-expression", 
+         ylab = "Variance of log-expression",
+         main = "Biological variance")
+    lines(c(min(var.out$per.block[[1]]$mean), max(var.out$per.block[[1]]$mean)), c(0, 0), col = "dodgerblue", lwd = 2)
+    points(var.out$per.block[[1]]$mean[cutoff], var.out$per.block[[1]]$bio[cutoff], col = "red", pch = 16, cex = .6)
+}
+```
+All plots together with technical variance
+```{r}
+cutoff <- rownames(var.out) %in% hvgs
+
+par(mfrow = c(1, 3))
+    plot(var.out$mean, var.out$total, pch = 16, cex = 0.4, 
+         xlab = "Mean log-expression", 
+         ylab = "Variance of log-expression",
+         main = "Total variance")
+    points(var.out$mean[cutoff], var.out$total[cutoff], col = "red", pch = 16, cex = .6)
+
+    plot(var.out$mean, var.out$bio, pch = 16, cex = 0.4, 
+         xlab = "Mean log-expression", 
+         ylab = "Variance of log-expression",
+         main = "Biological variance")
+    points(var.out$mean[cutoff], var.out$bio[cutoff], col = "red", pch = 16, cex = .6)
+    
+    plot(var.out$mean, var.out$tech, pch = 16, cex = 0.4, 
+         xlab = "Mean log-expression", 
+         ylab = "Variance of log-expression",
+         main = "Technical variance")
+    points(var.out$mean[cutoff], var.out$tech[cutoff], col = "red", pch = 16, cex = .6)    
+```
+Z-score transformation and PCA
+```{r}
+# runPCA and specify the variable genes to use for dim reduction with subset_row
+sce <- runPCA(sce, exprs_values = "logcounts", ncomponents = 50, subset_row = hvgs, scale = TRUE)
+
+wrap_plots(
+    plotReducedDim(sce, dimred = "PCA", colour_by = "sample_group", ncomponents = 1:2, point_size = 0.6),
+    plotReducedDim(sce, dimred = "PCA", colour_by = "sample_group", ncomponents = 3:4, point_size = 0.6),
+    plotReducedDim(sce, dimred = "PCA", colour_by = "sample_group", ncomponents = 5:6, point_size = 0.6),
+    ncol = 3
+) + plot_layout(guides = "collect")
+```
+Amount of variance explained by each PC
+```{r}
+plot(attr(reducedDim(sce, "PCA"), "percentVar")[1:50] * 100, type = "l", ylab = "% variance", xlab = "Principal component #")
+points(attr(reducedDim(sce, "PCA"), "percentVar")[1:50] * 100, pch = 21, bg = "grey", cex = .5)
+```
+tSNE
+```{r}
+set.seed(42)
+sce <- runTSNE(sce, dimred = "PCA", n_dimred = 30, perplexity = 30, name = "tSNE_on_PCA")
+plotReducedDim(sce, dimred = "tSNE_on_PCA", colour_by = "sample_group")
+```
+uMAP
+```{r}
+sce <- runUMAP(sce, dimred = "PCA", n_dimred = 30, ncomponents = 2, name = "UMAP_on_PCA")
+# see ?umap and ?runUMAP for more info
+sce <- runUMAP(sce, dimred = "PCA", n_dimred = 30, ncomponents = 10, name = "UMAP10_on_PCA")
+# see ?umap and ?runUMAP for more info
+
+wrap_plots(
+    plotReducedDim(sce, dimred = "UMAP_on_PCA", colour_by = "sample_group") +
+        ggplot2::ggtitle(label = "UMAP_on_PCA"),
+    plotReducedDim(sce, dimred = "UMAP10_on_PCA", colour_by = "sample_group", ncomponents = 1:2) +
+        ggplot2::ggtitle(label = "UMAP10_on_PCA"),
+    plotReducedDim(sce, dimred = "UMAP10_on_PCA", colour_by = "sample_group", ncomponents = 3:4) +
+        ggplot2::ggtitle(label = "UMAP10_on_PCA"),
+    ncol = 3
+) + plot_layout(guides = "collect")
+```
+```{r}
+sce <- runUMAP(sce, exprs_values = "logcounts", name = "UMAP_on_ScaleData")
+# Build Graph
+nn <- RANN::nn2(reducedDim(sce, "PCA"), k = 30)
+names(nn) <- c("idx", "dist")
+g <- buildKNNGraph(sce, k = 30, use.dimred = "PCA")
+reducedDim(sce, "KNN") <- igraph::as_adjacency_matrix(g)
+
+# Run UMAP and rename it for comparisson
+# temp <- umap::umap.defaults
+try(reducedDim(sce, "UMAP_on_Graph") <- NULL)
+reducedDim(sce, "UMAP_on_Graph") <- uwot::umap(X = NULL, n_components = 2, nn_method = nn)
+
+wrap_plots(
+    plotReducedDim(sce, dimred = "UMAP_on_PCA", colour_by = "sample_group") +
+        ggplot2::ggtitle(label = "UMAP_on_PCA"),
+    plotReducedDim(sce, dimred = "UMAP_on_ScaleData", colour_by = "sample_group") +
+        ggplot2::ggtitle(label = "UMAP_on_ScaleData"),
+    plotReducedDim(sce, dimred = "UMAP_on_Graph", colour_by = "sample_group") +
+        ggplot2::ggtitle(label = "UMAP_on_Graph"),
+    ncol = 3
+) + plot_layout(guides = "collect")
+```
+Genes of interest
+```{r}
+plotlist <- list()
+for (i in c("CD19", "IGHM", "CD3D", "CD3E", "CD3G", "CD40", "CXCR3", "CXCR4",
+    "CD80", "CCR6", "JCHAIN", "AICDA")) {
+    plotlist[[i]] <- plotReducedDim(sce, dimred = "UMAP_on_PCA", colour_by = i, by_exprs_values = "logcounts") +
+        scale_fill_gradientn(colours = colorRampPalette(c("grey90", "orange3", "firebrick", "firebrick", "red", "red"))(10)) +
+        ggtitle(label = i) + theme(plot.title = element_text(size = 20))
+}
+wrap_plots(plotlist, ncol = 3)
+```
+```{r}
+plotlist <- list()
+for (i in c("sample_group", "v_family_H", "v_family_L","CD19", "IGHM", "CXCR3", "CXCR4","CD80", "CCR6", "JCHAIN", "AICDA")) {
+    plotlist[[i]] <- plotReducedDim(sce, dimred = "UMAP_on_PCA", colour_by = i, by_exprs_values = "logcounts") +
+        scale_fill_gradientn(colours = colorRampPalette(c("grey90", "orange3", "firebrick", "firebrick", "red", "red"))(10)) +
+        ggtitle(label = i) + theme(plot.title = element_text(size = 20))
+}
+wrap_plots(plotlist, ncol = 3)
+
+plotlist <- list()
+for (i in c("sample_group", "v_family_H", "v_family_L", "CD19", "IGHM", "CXCR3", "CXCR4", "CD80", "CCR6", "JCHAIN", "AICDA")) {
+    sce_sub <- sce
+    # Exclude NA values for v_family_H only
+    if (i == "v_family_H") {
+        sce_sub <- sce[, !is.na(colData(sce)[[i]])]
+    }
+
+    plotlist[[i]] <- plotReducedDim(sce_sub, dimred = "UMAP_on_PCA", colour_by = i, by_exprs_values = "logcounts") +
+        scale_fill_gradientn(colours = colorRampPalette(c("grey90", "orange3", "firebrick", "firebrick", "red", "red"))(10)) +
+        ggtitle(label = i) + theme(plot.title = element_text(size = 20))
+}
+wrap_plots(plotlist, ncol = 3)
+ggsave("~/Documents/Thesis_data/my_umap_plots.png", wrap_plots(plotlist, ncol = 3), width = 12, height = 15)
+```
+
+```{r}
+plotlist <- list()
+for (i in c("sample_group", "v_family_H", "v_family_L", "CD19", "IGHM", "CXCR4", "CD80", "CCR6", "JCHAIN", "AICDA")) {
+    sce_sub <- sce
+    # Exclude NA for v_family_H
+    if (i == "v_family_H") {
+        sce_sub <- sce[, !is.na(colData(sce)[[i]])]
+    }
+
+    # Set custom titles
+    custom_title <- switch(i,
+        "sample_group" = "SAMPLE TYPE",
+        "v_family_H" = "HC V FAMILY",
+        "v_family_L" = "LC V FAMILY",
+        i # default fallback
+    )
+
+    plotlist[[i]] <- plotReducedDim(sce_sub, dimred = "UMAP_on_PCA", colour_by = i, by_exprs_values = "logcounts") +
+        scale_fill_gradientn(colours = colorRampPalette(c("grey90", "orange3", "firebrick", "firebrick", "red", "red"))(10)) +
+        ggtitle(label = custom_title) +
+        theme(plot.title = element_text(size = 20))
+}
+wrap_plots(plotlist, ncol = 3)
+ggsave("~/Documents/Thesis_data/my_umap_plots.png", wrap_plots(plotlist, ncol = 3), width = 12, height = 15)
+```
+
+
+```{r}
+plotlist <- list()
+for (i in c("sample_group", "CD19", "IGHM", "CXCR4", "CD80", "CCR6", "JCHAIN", "AICDA")) {
+    sce_sub <- sce
+
+    # Exclude "control" from sample_group
+     # Exclude "Control" and "Blood_MBC" from sample_group
+    if (i == "sample_group") {
+        sce_sub <- sce[, !(colData(sce)[["sample_group"]] %in% c("Control", "Blood_MBC"))]
+    }
+
+    # Set custom titles
+    custom_title <- switch(i,
+        "sample_group" = "SAMPLE TYPE",
+        i # default fallback
+    )
+
+    plotlist[[i]] <- plotReducedDim(sce_sub, dimred = "UMAP_on_PCA", colour_by = i, by_exprs_values = "logcounts") +
+        scale_fill_gradientn(colours = colorRampPalette(c("grey90", "orange3", "firebrick", "firebrick", "red", "red"))(10)) +
+        ggtitle(label = custom_title) +
+        theme(plot.title = element_text(size = 20))
+}
+wrap_plots(plotlist, ncol = 3)
+ggsave("~/Documents/Thesis_data/NO_CONTROL_my_umap_plots.png", wrap_plots(plotlist, ncol = 3), width = 12, height = 15)
+
+```
+
+```{r}
+plotlist <- list()
+for (i in c("sample_group")) {
+    sce_sub <- sce
+
+    # Exclude "control" from sample_group
+     # Exclude "Control" and "Blood_MBC" from sample_group
+    if (i == "sample_group") {
+        sce_sub <- sce[, !(colData(sce)[["sample_group"]] %in% c("Control", "Blood_MBC"))]
+    }
+
+    # Set custom titles
+    custom_title <- switch(i,
+        "sample_group" = "SAMPLE TYPE",
+        i # default fallback
+    )
+
+    plotlist[[i]] <- plotReducedDim(sce_sub, dimred = "UMAP_on_PCA", colour_by = i, by_exprs_values = "logcounts") +
+        scale_fill_gradientn(colours = colorRampPalette(c("grey90", "orange3", "firebrick", "firebrick", "red", "red"))(10)) +
+        ggtitle(label = custom_title) +
+        theme(plot.title = element_text(size = 20))
+}
+wrap_plots(plotlist, ncol = 3)
+ggsave("~/Documents/Thesis_data/NO_CONTROL_my_umap_plots.png", wrap_plots(plotlist, ncol = 3), width = 12, height = 15)
+
+```
+```{r}
+plotlist <- list()
+for (i in c("detected", "total", "subsets_mt_percent","subsets_ribo_percent","subsets_hb_percent")) { 
+    plotlist[[i]] <- plotReducedDim(sce, dimred = "UMAP_on_PCA", colour_by = i, by_exprs_values = "logcounts") +
+        scale_fill_gradientn(colours = colorRampPalette(c("grey90", "orange3", "firebrick", "firebrick", "red", "red"))(10)) +
+        ggtitle(label = i) + theme(plot.title = element_text(size = 20))
+}
+wrap_plots(plotlist, ncol = 3)
+```
+
+
+Heatmap with genesfrom paper from Riedel et al.
+```{r}
+library(dplyr)
+library(ggplot2)
+library(viridis)
+
+# List of the 52 specific genes you're interested in
+genes_of_interest <- c("CD52", "CR2", "CCR6", "S100A10", "ZBTB20", "ITGA4", 
+           "CST3", "CD55", "VIM", "EMP3", "TSC22D3", "FSCN1", "SCIMP", 
+           "ANXA2", "PARM1", "RPL38", "APOE", "FCMR", "FOXP1", "DNAJC7", "PLAC8", "CYBB", "NFATC1", "PLD4", "PTPN22", "CD9", "CCDC28B", 
+           "RASSF4")
+
+
+
+# Assuming 'sce' is your single-cell expression object
+sce_sub <- sce
+
+# Exclude "Control" and "Blood_MBC" from sample_group
+sce_sub <- sce[, !(colData(sce)[["sample_group"]] %in% c("Control", "Blood_MBC"))]
+
+# Filter the expression data to include only the genes of interest
+expression_data <- assay(sce_sub, "logcounts")[genes_of_interest, ]
+
+# Convert sparse matrix to a dense matrix (required for ggplot)
+expression_data_dense <- as.matrix(expression_data)
+
+# Transpose the matrix (genes in columns, samples in rows)
+df_heatmap <- as.data.frame(t(expression_data_dense))
+df_heatmap$sample_group <- colData(sce_sub)$sample_group # Assuming 'sample_group' is stored in colData
+
+# Optional: scale the expression values for better heatmap visualization
+df_heatmap_scaled <- df_heatmap %>%
+  select(-sample_group) %>%
+  scale() %>%
+  as.data.frame()
+
+# Add the sample_group column back after scaling
+df_heatmap_final <- cbind(df_heatmap$sample_group, df_heatmap_scaled)
+colnames(df_heatmap_final) <- c("sample_group", genes_of_interest)
+
+# Convert to long format for ggplot
+df_heatmap_long <- df_heatmap_final %>%
+  gather(key = "gene", value = "expression", -sample_group)
+
+# Plot the heatmap
+ggplot(df_heatmap_long, aes(x = gene, y = sample_group, fill = expression)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "mako", direction = -1, na.value = "grey90") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 7),
+    axis.text.y = element_text(size = 8),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = "Gene",
+    y = "Sample Group",
+    fill = "Expression (scaled)",
+    title = "Gene Expression Heatmap across Sample Groups"
+  )
+
+
+```

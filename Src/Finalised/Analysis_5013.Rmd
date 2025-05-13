@@ -1,0 +1,202 @@
+---
+title: "Analysis_5013"
+output: html_document
+---
+Installations
+```{r}
+#if (!require("BiocManager", quietly = TRUE))
+    #install.packages("BiocManager")
+
+#BiocManager::install("GenomicAlignments")
+#BiocManager::install("alakazam")
+
+```
+#libraries
+```{r}
+library(dplyr)
+library(ggplot2)
+library(circlize)
+library(tidyr)
+library(hrbrthemes)
+library(viridis)
+library(ggsci)
+library(readr)
+library(patchwork)
+library(tidyverse)
+library(ggpubr)
+```
+
+
+#data upload
+```{r}
+
+hc_data <- read.csv("~/Documents/Sequencing/Output_hc_lc/ig_blast_output.csv")
+lc_data <- read.csv2("/Users/evaro/Documents/Sequencing/Light_chain_feb/ig_blast_output_light_chain_edited.csv", sep = ";")
+smartseq_lc_data <- read.csv("~/Documents/Sequencing/Smart_seq/BCR_analysis/smartseq_blast_data.csv")
+```
+#file preparation
+```{r}
+lc_data <- lc_data %>% rename(sequence_id = hc_sequence_id)
+combined_hc_lc_data <- merge(hc_data, lc_data, by = "sequence_id")
+combined_hc_lc_data_all <- merge(hc_data, lc_data, by = "sequence_id", all =TRUE)
+
+#renaming
+combined_hc_lc_data <- combined_hc_lc_data %>%
+  dplyr::select(sequence_id, v_call.x, v_call.y, d_call.x, j_call.x, j_call.y) %>%
+  rename(v_hc = v_call.x, v_lc = v_call.y, d_hc = d_call.x, j_hc = j_call.x, j_lc = j_call.y) %>%
+  mutate(v_hc = sub("^.", "", v_hc), v_lc = sub("^.", "", v_lc),d_hc = sub("^.", "", d_hc),j_hc = sub("^.", "", j_hc),j_lc = sub("^.", "", j_lc))
+
+combined_hc_lc_data_all <- combined_hc_lc_data_all %>%
+  dplyr::select(sequence_id, v_call.x, v_call.y, d_call.x, j_call.x, j_call.y) %>%
+  rename(v_hc = v_call.x, v_lc = v_call.y, d_hc = d_call.x, j_hc = j_call.x, j_lc = j_call.y) %>%
+  mutate(v_hc = sub("^.", "", v_hc), v_lc = sub("^.", "", v_lc),d_hc = sub("^.", "", d_hc),j_hc = sub("^.", "", j_hc),j_lc = sub("^.", "", j_lc))
+```
+
+
+Running IgDiscover - heavy chain - Sanger
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+igdiscover --version
+igdiscover init --db ~/Documents/Sequencing/database --single-reads ~/Documents/Sequencing/data_jan25/sequences.fasta  250317_hc_igdiscover
+cd 250317_hc_igdiscover
+igdiscover run
+```
+#clonotype analysis by clonoquery
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+cd 250317_hc_igdiscover
+igdiscover clonotypes ~/Documents/Sequencing/250317_hc_igdiscover/final/assigned.tsv.gz --mismatches 0.2 --members=outputfilename.tsv | gzip -c > hc_clonotypes.tsv.gz
+```
+
+Running IgDiscover - light chain - Sanger
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+igdiscover --version
+igdiscover init --db ~/Documents/Sequencing/database_light_chain --single-reads ~/Documents/Sequencing/Light_chain_feb/combined_sequences.fasta  250317_lc_igdiscover
+```
+
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+cd 250317_lc_igdiscover
+igdiscover run
+```
+#clonotype analysis by clonoquery
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+cd 250317_lc_igdiscover
+igdiscover clonotypes ~/Documents/Sequencing/250317_lc_igdiscover/final/assigned.tsv.gz --mismatches 0.2 --members=outputfilename.tsv | gzip -c > members_clonotypes.tsv.gz
+```
+
+Visualising clonotype results
+```{r}
+hc_clonotypes <- read.table("~/Documents/Sequencing/250317_hc_igdiscover/clonotypes.tsv", sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+lc_clonotypes <- read.table("~/Documents/Sequencing/250317_lc_igdiscover/clonotypes.tsv", sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+
+
+all_clonotypes <- bind_rows(hc_clonotypes %>% dplyr::select(count, v_call),
+                         lc_clonotypes %>% dplyr::select(count, v_call))
+all_clonotypes$type <- ifelse(substr(all_clonotypes$v_call, 3, 3) == "K", "Kappa",
+                       ifelse(substr(all_clonotypes$v_call, 3, 3) == "L", "Lambda",
+                       ifelse(substr(all_clonotypes$v_call, 3, 3) == "H", "Heavy", NA)))
+
+write.csv(all_clonotypes, "~/Documents/Thesis_data/all_clonotypes.csv", row.names = FALSE)
+
+all_clonotypes <- all_clonotypes %>%
+  group_by(type) %>% 
+  arrange(type, desc(count), .by_group = TRUE) 
+
+stacked_bar_chart_clonotypes <- ggplot(all_clonotypes, 
+                                       aes(x = type, y = count, 
+                                           fill = count)) +  # Map fill to count
+  geom_bar(position = "stack", stat = "identity", color = "black", size = 0.3) +
+  labs(x = "Variable region type", y = "# sequences", title = "Clonotype distribution") +
+  scale_fill_gradient(low = "darkblue", high = "yellow") +  # Gradient from light to dark
+  theme(legend.position = "right",
+        axis.title = element_text(size = 16),   # bigger axis titles
+        axis.text = element_text(size = 14),    # bigger axis numbers
+        plot.title = element_text(size = 18, face = "bold") )  # Show legend
+stacked_bar_chart_clonotypes
+
+ggsave("clonotype_diversity_sanger.png", plot = stacked_bar_chart_clonotypes)
+```
+Visualising 
+```{r}
+# Process the first dataset
+filtered_smartseq_data <- smartseq_lc_data %>%
+  mutate(third_letter = substr(v_call, 3, 3)) %>%  # Extract third character
+  filter(third_letter %in% c("H", "K", "L")) %>%
+  group_by(third_letter) %>%
+  summarise(count = n()) %>%
+  mutate(dataset = "SmartSeq3xpress")  # Label dataset
+
+# Process the second dataset (replace 'other_data' with your actual dataframe)
+filtered_sanger_data <- filtered_sanger_data %>%
+  mutate(dataset = "Sanger sequencing")  # Label dataset
+
+# Combine both datasets
+combined_filtered_data <- bind_rows(filtered_smartseq_data, filtered_sanger_data)
+
+# Plot histogram with grouped bars
+all_both_methods <- ggplot(combined_filtered_data, aes(x = third_letter, y = count, fill = dataset)) +
+  geom_bar(stat = "identity", position = position_dodge(), width = 0.6) +  # Thinner side-by-side bars
+  labs(title = "Chain Distribution between methods",
+       x = "Chains",
+       y = "Count") +
+  scale_fill_lancet()  +
+  theme_bw() +
+  theme(
+    legend.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(size = 16),   
+    axis.text = element_text(size = 14),    
+    plot.title = element_text(size = 18, face = "bold")
+  )
+
+all_both_methods 
+
+ggsave("~/Documents/Thesis_data/histogram_all_sequences.png", plot = all_both_methods)
+```
+In percentages:
+```{r}
+percentages_data <- read.csv("~/Documents/Sequencing/dataframes/percentages.csv", sep = ";") 
+
+#percentages_data$dataset <- factor(percentages_data$dataset, levels = c("Sanger", "Smart-seq3xpress"))
+
+#levels(percentages_data$dataset)  # Sanity check
+
+#unique(percentages_data$dataset)
+
+
+#percentages_data <- 
+
+# Plot histogram with grouped bars
+all_both_methods_percentages <- ggplot(percentages_data, aes(x = third_letter, y = percentage, fill = dataset)) +
+  geom_bar(stat = "identity", position = position_dodge(), width = 0.6) +  # Thinner side-by-side bars
+  labs(title = "Chain Distribution between methods",
+       x = "Chains",
+       y = "Percentage of total sequenced") +
+  scale_fill_lancet()  +
+  theme_bw() +
+  theme(
+    legend.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(size = 16),   
+    axis.text = element_text(size = 14),    
+    plot.title = element_text(size = 18, face = "bold")
+  )
+
+all_both_methods_percentages
+
+ggsave("~/Documents/Sequencing/Figures/histogram_percentages.png", plot = all_both_methods_percentages)
+```
+

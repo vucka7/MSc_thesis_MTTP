@@ -1,0 +1,150 @@
+---
+title: "DGE"
+output: html_document
+---
+
+Loading libraries
+```{r}
+suppressPackageStartupMessages({
+    library(SingleCellExperiment)
+    library(ggplot2)
+    library(scater)
+    library(scran)
+    # library(venn)
+    library(patchwork)
+    library(ggplot2)
+    library(pheatmap)
+    library(igraph)
+    library(dplyr)
+    library(ggpubr)
+    library(stringr)
+})
+```
+
+Load data
+```{r}
+sce <- readRDS("~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/dr_filtered_raw_data_250324.rds")
+```
+
+```{r}
+# Subset the SCE object to include only Blood_CSP and BM_CSP
+sce_subset <- sce[, sce$sample_group %in% c("Blood_CSP", "BM_CSP")]
+```
+
+```{r}
+# Compute differentiall expression
+markers_genes <- scran::findMarkers(
+    x = sce_subset,
+    groups = as.character(sce_subset$sample_group),
+    test.type = "wilcox",
+    lfc = .5,
+    pval.type = "all",
+    direction = "up"
+)
+
+# List of dataFrames with the results for each cluster
+markers_genes
+
+# Visualizing the expression of one
+head(markers_genes[["1"]])
+```
+```{r}
+DGE_cell_selection <- findMarkers(
+    x = sce_subset,
+    groups = sce_subset$sample_group,  # use sample_group as the cluster variable
+    lfc = .25,
+     # log fold change threshold
+    pval.type = "all",          # compute p-values for all comparisons
+    direction = "any"           # consider genes with any significant change
+)
+top5_cell_selection <- lapply(names(DGE_cell_selection), function(x) {
+    temp <- DGE_cell_selection[[x]][1:5, 1:2]
+    temp$gene <- rownames(DGE_cell_selection[[x]])[1:5]
+    temp$cluster <- x
+    return(temp)
+})
+top5_cell_selection <- as_tibble(do.call(rbind, top5_cell_selection))
+top5_cell_selection
+
+```
+Top 25 overexpressed genes for plotting
+```{r}
+# Colect the top 25 genes for each cluster and put the into a single table
+top25 <- lapply(names(markers_genes), function(x) {
+    temp <- markers_genes[[x]][1:25, 1:2]
+    temp$gene <- rownames(markers_genes[[x]])[1:25]
+    temp$cluster <- x
+    return(temp)
+})
+top25 <- as_tibble(do.call(rbind, top25))
+top25$p.value[top25$p.value == 0] <- 1e-300
+top25
+```
+
+barplots per cluster
+```{r}
+par(mfrow = c(2, 3), mar = c(4, 6, 3, 1))
+for (i in unique(top25$cluster)) {
+    barplot(sort(setNames(-log10(top25$p.value), top25$gene)[top25$cluster == i], F),
+        horiz = T, las = 1, main = paste0(i, " vs. rest"), border = "white", yaxs = "i", xlab = "-log10pval"
+    )
+    abline(v = c(0, -log10(0.05)), lty = c(1, 2))
+}
+```
+
+Heatmap
+```{r}
+top25 %>%
+    group_by(cluster) %>%
+    slice_min(p.value, n = 5, with_ties = FALSE) -> top5
+
+#png("~/Documents/Sequencing/Smart_seq/figures/heatmap_BvsBM.png", width = 8, height = 6, units = "in", res = 300)
+top5_cell_selection <- top5_cell_selection%>%
+    filter(gene != "ENSMFAG00000030488") %>%
+    filter(gene != "HIGD2A")
+
+
+scater::plotHeatmap(sce_subset[, order(sce_subset$sample_group)],
+    features = unique(top5_cell_selection$gene),
+    center = T, zlim = c(-3, 3),
+    colour_columns_by = "sample_group",
+    show_colnames = F, cluster_cols = F,
+    fontsize_row = 6,
+    color = colorRampPalette(c("purple", "black", "yellow"))(90)
+)
+
+```
+
+Violin plot for each gene - sample group
+```{r}
+comparisons <- list(
+  c("Blood_CSP", "BM_CSP")
+)
+
+scater::plotExpression(
+  sce_subset,
+  features = unique(top5_cell_selection$gene),
+  x = "sample_group",
+  ncol = 5,
+  colour_by = "sample_group",
+  scales = "free"
+) +
+  #ggsignif::geom_signif(
+    #comparisons = comparisons,
+    #map_signif_level = FALSE,
+   # test = "wilcox.test",
+    #textsize = 3,
+    #label = "p.format"
+  #) +
+  labs(
+    x = "Immune compartment",
+    y = "Expression (logcounts)",
+    legend = "none"
+  ) +
+  scale_color_lancet() +  # <-- use this one
+  theme_bw() +
+  theme(aspect.ratio = 1, legend.position = "none")
+
+#save
+ggsave("~/Documents/Sequencing/figures/violin_BvsBM.png", width = 8, height = 6, dpi = 300)
+```

@@ -1,0 +1,58 @@
+---
+title: "IgDiscover_clonotype_smartseq"
+output: html_document
+---
+
+```{r}
+library(ggsci)
+library(ggplot2)
+```
+
+
+Merging fasta files - heavy and light chains
+```{r}
+#V-gene
+file1 <- readLines("~/Documents/Sequencing/database/V.fasta")
+file2 <- readLines("~/Documents/Sequencing/database_light_chain/V.fasta")
+file3 <- readLines("~/Documents/Sequencing/database/D.fasta")
+file4 <- readLines("~/Documents/Sequencing/database_light_chain/D.fasta")
+file5 <- readLines("~/Documents/Sequencing/database/J.fasta")
+file6 <- readLines("~/Documents/Sequencing/database_light_chain/J.fasta")
+
+merged_V <- c(file1, file2)
+merged_D <- c(file3, file4)
+merged_J <- c(file5, file6)
+
+writeLines(merged_V, "~/Documents/Sequencing/Smart_seq/BCR_analysis/database/V.fasta")
+writeLines(merged_D, "~/Documents/Sequencing/Smart_seq/BCR_analysis/database/D.fasta")
+writeLines(merged_J, "~/Documents/Sequencing/Smart_seq/BCR_analysis/database/J.fasta")
+
+```
+
+IgDiscover - for Smartseq3xpress:
+--> running IgBlast for gene annotation
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+igdiscover --version
+cd ~/Documents/Sequencing/Smart_seq/BCR_analysis/Results
+igdiscover init --db ~/Documents/Sequencing/Smart_seq/BCR_analysis/database --single-reads ~/Documents/Sequencing/IgDiscover_Scifer/smartseq_corrected_igblast.fasta  hc_smart_seq_IgD
+```
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+cd ~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/hc_smart_seq_IgD
+igdiscover run
+```
+IgDiscover --> clonoquery for clonotype assignment
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+cd ~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/hc_smart_seq_IgD
+igdiscover clonotypes ~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/hc_smart_seq_IgD/final/assigned.tsv.gz --mismatches 0.2 --members=members_file_hc_smartseq.tsv | gzip -c > heavy_chain_clones.tsv.gz
+
+```
+
