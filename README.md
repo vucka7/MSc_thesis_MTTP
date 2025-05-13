@@ -1,2 +1,10 @@
 # MSc_thesis_MTTP
 Master's thesis source code repository
+
+Despite recent advances in malaria vaccine development, achieving long-term protection remains a major challenge. This is partly due to limited understanding of the mechanisms underlying durable humoral immunity against Plasmodium infections.  Recent efforts have focused on identifying potent antibody epitopes within the immunodominant circumsporozoite protein (CSP), a major surface antigen of Plasmodium falciparum sporozoites. This inspired an epitope-based vaccine strategy to create a novel vaccine candidate incorporating immunodominant P. falciparum CSP (PfCSP) epitope motifs. The study presented here evaluates whether this next-generation PfCSP-based vaccine elicits strong humoral immunity particularly focusing on the diversity of B cell specificities induced. 
+
+Flow cytometry analysis of peripheral blood and bone marrow samples from immunized cynomolgus macaques revealed robust CSP-specific memory B cell (CSP-MBC) responses. However, a fast decline in frequencies indicated a rather transient immune response. The CSP-MBCs were further investigated using single-cell V(D)J sequencing technologies. This revealed a potent response against the NANP-repeat motifs within the vaccines PfCSP epitope as IGHV3-50 gene sequences – orthologous to human IGHV3-33, known for targeting NANP-repeat motifs - were retrieved from peripheral blood samples.
+
+Further transcriptomic profiling using Smart-seq3xpress revealed high similarity between peripheral blood and bone marrow MBCs, though bone marrow-resident cells exhibited a more quiescent phenotype. While Smart-seq3xpress provided valuable whole-transcriptome data, it was limited in V(D)J recovery due to low transcript abundance compared to conventional sanger sequencing. Further studies of expanded cohort and deeper or targeted sequencing would be needed to thoroughly investigate mechanisms driving durable, protective immunity against malarial infection.
+
+Code used to analyse data within this thesis is available within this repository.
