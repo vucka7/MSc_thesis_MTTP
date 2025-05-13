@@ -1,0 +1,60 @@
+---
+title: "Test_sequencing"
+output: html_document
+---
+
+Test sequencing - animal 5013
+Installing SciFer
+```{r}
+# Scifer installed from github, dependencies were not installed from source.
+#devtools::install_github("rodrigarc/scifer")
+```
+Assessing sanger sequence quality of single-cell sorts
+```{r}
+# Select the folder location of the fcs files (flow cytometry index data), this example uses the data provided with `scifer`
+library(scifer)
+
+# test for a single sequence
+abi_seq <- sangerseqR::read.abif("data_jan25/5013_01/A11_NHP_IgGHC_rev_R.ab1")
+summarise_abi_file(abi_seq)
+
+
+
+directory_sequences <- "data_jan25/"
+summary_sanger_data <- summarise_quality(folder_sequences = directory_sequences,
+                                         secondary.peak.ratio = 0.33,
+                                         trim.cutoff = 0.01,
+                                         processors = 8
+                                         )
+
+```
+## Generate quality report
+
+```{r}
+
+quality_report(folder_sequences = "~/Documents/Sequencing/data_jan25/",
+               outputfile = "~/Documents/Sequencing/data_jan25/QC_report.html",
+               output_dir = "~/Documents/Sequencing/data_jan25/",
+               processors = 8)
+               
+```
+
+
+## Igblast annotation
+```{r}
+ighv_res <- igblast(
+        database = "/Users/evaro/Documents/Sequencing/database",
+        fasta = "/Users/evaro/Documents/Sequencing/data_jan25/sequences.fasta",
+        threads = 1 #For parallel processing. Default = 1
+)
+
+head(ighv_res, 2)
+
+write.csv(ighv_res, "ig_blast_output.csv")
+```
+
+```{r session_info}
+sessionInfo()
+```
+
+

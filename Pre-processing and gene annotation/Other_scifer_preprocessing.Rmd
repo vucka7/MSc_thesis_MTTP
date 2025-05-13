@@ -1,0 +1,80 @@
+---
+title: "scifer_preprocessing"
+output: html_document
+---
+
+```{r}
+library(scifer)
+directory_sequences <- "~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/raw_data"
+summary_sanger_data <- summarise_quality(folder_sequences = directory_sequences,
+                                         secondary.peak.ratio  = 0.33,
+                                         trim.cutoff = 0.01,
+                                         processors = 8
+                                         )
+```
+#generate a quality report
+```{r}
+
+quality_report(folder_sequences = "~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/raw_data",
+               outputfile = "~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/qc/QC_report.html",
+               output_dir = "~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/qc",
+               processors = 8)
+               
+```
+Igblast annotation
+```{r}
+ighv_res <- igblast(
+        database = "/Users/evaro/Documents/Sequencing/database",
+        fasta = "~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/qc/combined_sequences.fasta",
+        threads = 1 #For parallel processing. Default = 1
+)
+
+head(ighv_res, 2)
+
+write.csv(ighv_res, "~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/output_data_igblast/ig_blast_output.csv")
+```
+
+IgDiscover: using IgBlast to annotate sequences
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+igdiscover --version
+igdiscover init --db ~/Documents/Sequencing/database --single-reads ~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/qc/combined_sequences.fasta ~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/clonotypes
+```
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+cd ~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/clonotypes
+igdiscover run
+```
+
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+cd ~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/clonotypes
+igdiscover clonotypes ~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/clonotypes/final/assigned.tsv.gz --mismatches 0.2 --members=members.tsv | gzip -c > clonotypes.tsv.gz
+```
+
+#merging this data with previously acquired data for 5013
+```{r}
+library(dplyr)
+# Read the two TSV files
+df1 <- read.delim("~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/clonotypes/final/assigned.tsv", sep = "\t", header = TRUE)
+df2 <- read.delim("~/Documents/Sequencing/250317_hc_igdiscover/final/assigned.tsv", sep = "\t", header = TRUE)
+merged_df <- rbind(df1, df2)
+# Save to a new TSV file
+write.table(merged_df, "~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/clonotypes/final/merged_file_with_5013.tsv", sep = "\t", row.names = FALSE, quote = FALSE)
+```
+
+Using IgDiscover clonoquery to identify clonotypes
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+cd ~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/clonotypes
+igdiscover clonotypes ~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/clonotypes/final/merged_file_with_5013.tsv --mismatches 0.2 --members=members_file_with_5013.tsv | gzip -c > clonotypes_with_5013.tsv.gz
+```
+
