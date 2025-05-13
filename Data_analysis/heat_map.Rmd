@@ -1,0 +1,155 @@
+---
+title: "heat_map"
+output: html_document
+---
+
+Libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+library(tidyr)
+library(forcats)
+```
+
+Data
+```{r}
+data_sanger <- read.csv("~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/clonotypes/final/merged_file_with_5013.tsv", sep =",")
+data_smartseq <- read.csv("~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/hc_smart_seq_IgD/final/assigned.tsv", sep ="\t")
+
+data_smartseq <- data_smartseq %>%
+  mutate(v_call_gene = sub("\\*.*", "", v_call))
+data_smartseq$animal <- "5013"
+
+data_sanger <- data_sanger %>%
+  mutate(animal = sub("_.*", "", sequence_id))
+
+all_data <- rbind(data_sanger, data_smartseq)
+
+all_data <- all_data %>%
+  mutate(v_call_gene = sub("\\*.*", "", v_call), j_call_gene = sub("\\*.*", "", j_call)) %>%
+  filter(locus == "IGH")
+
+#save as a file
+write.csv(all_data, "~/Documents/Sequencing/data_analysis_Apr_2025/output_general/all_data_merged_heavy_chain_only.tsv", row.names = FALSE)
+
+```
+
+Making the heatmap V_gene vs H_gene
+```{r}
+# Clean and prepare the data
+df_heatmap_vj <- all_data %>%
+  #filter(Group == "Total IgG") %>%  # Optional: restrict to Total IgG
+  group_by(v_call_gene, j_call_gene) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(freq = log10(n / sum(n)))  # Log10 frequency
+
+# Order genes by mean frequency (optional)
+df_heatmap_vj <- df_heatmap_vj %>%
+  mutate(
+    v_call = fct_reorder(v_call_gene, freq, .fun = mean, .desc = TRUE),
+    j_call = fct_reorder(j_call_gene, freq, .fun = mean, .desc = TRUE)
+  )
+
+# Plot heatmap
+ggplot(df_heatmap_vj, aes(x = v_call_gene, y = j_call_gene, fill = freq)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "mako", direction = -1) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
+    axis.text.y = element_text(size = 8),
+    panel.grid = element_blank(),
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "IGHV Gene",
+    y = "IGHJ Gene",
+    fill = "log10(freq)",
+    title = "IGHJ × IGHV Gene Usage Heatmap")#+
+  #theme(aspect.ratio = 1)
+  
+#save
+ggsave("~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/figures/heatmap_vj.png", width = 8, height = 6, dpi = 300)
+```
+Heatmap by animal
+```{r}
+df_heatmap_vj <- all_data %>%
+  group_by(animal, v_call_gene) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(animal) %>%
+  mutate(freq = log10(n / sum(n))) %>%
+  ungroup()
+
+# Optional: order genes by mean freq across all animals
+df_heatmap_vj <- df_heatmap_vj %>%
+  mutate(v_call = fct_reorder(v_call_gene, freq, .fun = mean, .desc = TRUE))
+
+# Plot heatmap: Animals (rows) × V genes (columns)
+ggplot(df_heatmap_vj, aes(x = v_call_gene, y = animal, fill = freq)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "mako", direction = -1, na.value = "grey90") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 7),
+    axis.text.y = element_text(size = 8),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = "IGHV Gene",
+    y = "Animal",
+    fill = "log10(freq)",
+    title = "IGHV Gene Usage per Animal"
+  )
+
+
+```
+Heatmap by sample_type
+```{r}
+plate_map <- read.csv("~/Documents/Sequencing/Smart_seq/plate_map.csv", sep = ";")
+
+airr_data <- read.csv("~/Documents/Sequencing/Smart_seq/BCR_analysis/smartseq_airr.tsv", sep = "\t")
+
+data_smartseq <- data_smartseq%>%
+  mutate(Well = sub("_.*", "", sequence_id)) %>%
+  left_join(plate_map, by = "Well") %>%
+  mutate(v_call_gene = sub("\\*.*", "", v_call))%>%
+  mutate(j_call_gene = sub("\\*.*", "", j_call))
+
+saveRDS(data_smartseq, "~/Documents/Sequencing/HW_malaria_5002_3001_2008_1010/output_data_general/corrected_data_smartseq.rds")
+
+data_smartseq <- data_smartseq %>%
+  filter(Sample_type %in% c("Blood_CSP", "BM_CSP"),
+         locus == "IGH")
+
+df_heatmap_sample_type <- data_smartseq %>%
+  group_by(Sample_type, v_call_gene) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(Sample_type) %>%
+  mutate(freq = log10(n / sum(n))) %>%
+  ungroup()
+
+# Optional: order genes by mean freq across all animals
+df_heatmap_sample_type <- df_heatmap_sample_type %>%
+  mutate(v_call = fct_reorder(v_call_gene, freq, .fun = mean, .desc = TRUE))
+
+# Plot heatmap: Animals (rows) × V genes (columns)
+ggplot(df_heatmap_sample_type, aes(x = v_call_gene, y = Sample_type, fill = freq)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "mako", direction = -1, na.value = "grey90") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 7),
+    axis.text.y = element_text(size = 8),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = "IGHV Gene",
+    y = "Immune Compartment",
+    fill = "log10(freq)",
+    title = "IGHV Gene Usage per Immune Compartment"
+  )
+
+
+```
+

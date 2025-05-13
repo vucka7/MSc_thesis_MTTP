@@ -1,0 +1,152 @@
+---
+title: "data_analysis"
+output: html_document
+---
+Import data file
+```{r}
+flow_data <-read.csv2("/Users/evaro/Documents/Thesis_data/flow_data.csv", sep = ";")
+D66_BM_data <- read.csv2("/Users/evaro/Documents/Thesis_data/BM_flow_data.csv", sep = ";")
+```
+Load all libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(ggsci)
+```
+```{r}
+
+
+# Assuming your data frame is called `data` with columns:
+# 'animal', 'group', 'D0', 'D16', 'D66', 'D99', 'D176'
+
+# 1. Reshape the data from wide to long format
+flow_data_long <- flow_data %>%
+  select(-D66) %>%
+  pivot_longer(cols = starts_with("D"),
+               names_to = "time",
+               values_to = "cell_frequency") %>%
+  mutate(time = sub("^.", "", time)) %>%  # Remove leading character
+  mutate(time = as.integer(time))  # Convert to integer
+ # Ordering time points
+
+# 2. Calculate the mean and standard error (or CI) for error bars
+data_summary <- flow_data_long %>%
+  group_by(Group, time) %>%
+  summarise(
+    mean_frequency = mean(cell_frequency),
+    se_frequency = sd(cell_frequency) / sqrt(n())  # Standard error of the mean
+  )
+
+# 3. Create the line plot with error bars
+blood_memory_B_cell <- ggplot(data_summary, aes(x = time, y = mean_frequency, color = Group, group = Group)) +
+  geom_line() +  # Line plot for each group
+  geom_point(size = 3) +  # Add points for each time point
+  geom_errorbar(aes(ymin = mean_frequency - se_frequency, ymax = mean_frequency + se_frequency), 
+                width = 0.3) +  # Error bars (standard error) with horizontal end lines
+  scale_color_lancet() +
+  theme_bw() +
+  labs(x = "Time", y = "% out of IgG+ MBCs", color = "Group", title = "CSP-MBC frequencies over time") +
+  theme(aspect.ratio = 1, 
+        legend.position = "right") +
+  
+  scale_x_continuous(breaks = c(0, 16, 32, 49, 92, 172))  # Custom x-axis breaks
+blood_memory_B_cell
+
+```
+Plot for one time point
+```{r}
+D16_data <- flow_data_long %>%
+  filter(time == 16) 
+
+ # for scale_color_lancet
+
+D16_data_plot <- ggplot(D16_data, aes(x = Group, y = cell_frequency, color = Group)) +
+  geom_jitter(aes(shape = ifelse(Animal == "5013", "5013", "Other")), 
+              width = 0.2, size = 3) +
+  stat_summary(fun.data = "mean_se", geom = "errorbar", width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5) +
+  scale_color_lancet(guide = "none") +  # Use Lancet colors and hide color legend
+  scale_shape_manual(values = c("5013" = 17, "Other" = 16)) +
+  guides(shape = guide_legend(title = NULL)) +
+  theme_bw() +
+  labs(x = "Group", y = "% out of IgG+ MBCs", title = "Mean CSP+ MBC frequencies on day 16 in blood") +
+  theme(aspect.ratio = 1, legend.position = "right")
+D16_data_plot
+
+
+
+
+
+```
+Flow data animal 5013 only
+```{r}
+data_5013 <- flow_data_long %>%
+  filter(Animal == "5013")
+
+animal_5013_cell_frequencies <- ggplot(data_5013, aes(x = time, y = cell_frequency, color = Group, group = Group)) +
+  geom_line(color = "black") +  # Line plot for each group
+  geom_point(size = 3, shape = 17, color = "black") +  # Add points for each time point
+  scale_color_lancet() +
+  theme_bw() +
+  labs(x = "Time", y = "Mean CSP + memory B Cell Frequency", title = "CSP+ memory B cell frequencies over time for animal 5013") +
+  theme(aspect.ratio = 1, 
+    legend.position = "none") +
+  scale_x_continuous(breaks = c(0, 16, 32, 49, 92, 172)) 
+
+animal_5013_cell_frequencies
+ # Shows first 8 default colors
+
+```
+Flow data for D66 bone marrow
+```{r}
+D66_BM_plot <-ggplot(D66_BM_data, aes(x = Group, y = as.numeric(D66), colour = Group)) +
+  geom_jitter(aes(shape = ifelse(Animal == "5013", "5013", "Other")), width = 0.2, size = 3) +  # Jittered points with different shape for 5013
+  stat_summary(fun.data = "mean_se", geom = "errorbar", width = 0.2) +  # Error bars showing mean ± SE
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5) +  # Mean line with same color as dots
+  # Mean line with same color as dots
+ # Mean line with same color as dots
+  scale_shape_manual(values = c("5013" = 17, "Other" = 16)) +  # Triangle (17) for 5013, Circle (16) for others
+  scale_color_lancet(guide = "none") +  # Remove color legend without manually setting colors
+  guides(shape = guide_legend(title = NULL)) +  # Keep shape legend, remove title
+  theme_bw() +
+  labs(x = "Group", y = "Cell Frequency", title = "CSP+ Cell Frequencies at D66 in BM") +
+  theme(aspect.ratio = 1,
+        legend.position = "right")
+D66_BM_plot
+
+```
+```{r}
+final_plot <-grid.arrange(blood_memory_B_cell, animal_5013_cell_frequencies, D16_data_plot, D66_BM_plot, ncol = 2, nrow = 2)
+ggsave("cell_frequency.png", plot = final_plot, width = 12, height = 8, dpi = 300)
+```
+
+ELISA data
+```{r}
+elisa_data <- read.csv2("~/Documents/Sequencing/ELISA/5013_data.csv", sep = ";")
+
+elisa_data_long <- elisa_data %>%
+  pivot_longer(cols = starts_with("anti"),
+               names_to = "antigen",
+               values_to = "ED50") %>%
+  filter(antigen == "anti_p126")
+
+elisa_plot <- ggplot(elisa_data_long, aes(x = Time, y = ED50, color = antigen, group = antigen)) +
+  geom_line() +  # Line plot for each group
+  geom_point(size = 2) +  # Add points for each time point
+  scale_color_lancet() +
+  theme_bw() +
+  theme(aspect.ratio = 1, 
+    legend.position = "none") +
+  scale_x_continuous(breaks = c(0, 16, 32, 49, 66, 92, 120, 149, 172)) 
+
+elisa_plot
+
+#save
+ggsave("~/Documents/Sequencing/ELISA/elisa_plot.png", plot = elisa_plot, width = 6, height = 4, dpi = 300)
+```
+
+
+
+
