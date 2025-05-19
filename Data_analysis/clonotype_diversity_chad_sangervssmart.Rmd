@@ -1,0 +1,280 @@
+---
+title: "clonotype_diversity_chad_sangervssmart"
+output: html_document
+---
+Libraries
+```{r}
+library(vegan)
+library(tidyr)
+library(dplyr)
+library(ggsci)
+```
+Libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+```
+
+Data
+```{r}
+sanger_hc_clonotypes <- read.csv("~/Documents/Sequencing/250317_hc_igdiscover/hc_clonotypes.tsv", sep = "\t")
+
+sanger_lc_clonotypes <- read.csv("~/Documents/Sequencing/250317_lc_igdiscover/clonotypes.tsv", sep = "\t")
+
+sanger_hc_clonotypes <- sanger_hc_clonotypes %>%
+  mutate(v_call_gene = gsub("\\*.*", "", v_call)) %>%
+  mutate(sample_group = "Sanger_HC") %>%
+  select(v_call_gene, sample_group, count)
+
+sanger_lc_clonotypes <- sanger_lc_clonotypes %>%
+  mutate(v_call_gene = gsub("\\*.*", "", v_call)) %>%
+  mutate(sample_group = "Sanger_LC") %>%
+  select(v_call_gene, sample_group, count)
+
+```
+
+Running clonotypes for smartseq to get only CSP-specific results
+```{bash}
+source ~/.zshrc
+conda activate
+source activate igdiscover-0.15.1
+cd ~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/hc_smart_seq_IgD
+igdiscover clonotypes ~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/hc_smart_seq_IgD/final/CSP_only_assigned.tsv --mismatches 0.2 | gzip -c > CSP_clonotypes_only.tsv.gz
+
+```
+
+```{r}
+smartseq_clonotypes <- read.csv("~/Documents/Sequencing/Smart_seq/BCR_analysis/Results/hc_smart_seq_IgD/heavy_chain_clones.tsv", sep = "\t")
+
+smartseq_HC_clonotypes <- smartseq_clonotypes %>%
+  dplyr::filter(substr(v_call, 3, 3) == "H") %>%
+  mutate(v_call_gene = gsub("\\*.*", "", v_call)) %>%
+  mutate(sample_group = "Smartseq_HC") %>%
+  select(v_call_gene, sample_group, count)
+
+smartseq_LC_clonotypes <- smartseq_clonotypes %>%
+  dplyr::filter(substr(v_call, 3, 3) %in% c("L", "K")) %>%
+  mutate(v_call_gene = gsub("\\*.*", "", v_call)) %>%
+  mutate(sample_group = "Smartseq_LC") %>%
+  select(v_call_gene, sample_group, count)
+```
+
+```{r}
+all_data <- rbind(sanger_hc_clonotypes, sanger_lc_clonotypes, smartseq_HC_clonotypes, smartseq_LC_clonotypes)
+```
+Wide format prep
+```{r}
+diversity_input <- all_data %>%
+  group_by(sample_group, v_call_gene) %>%
+  summarise(count = sum(count), .groups = "drop") %>%
+  pivot_wider(
+    names_from = v_call_gene,
+    values_from = count,
+    values_fill = list(count = 0)
+  )
+```
+
+Calculating diversity metrics
+```{r}
+div_counts <- as.data.frame(diversity_input[, -1])
+rownames(div_counts) <- diversity_input$sample_group
+
+diversity_summary <- data.frame(
+  sample_group = rownames(div_counts),
+  richness = specnumber(div_counts),
+  shannon = diversity(div_counts, index = "shannon"),
+  simpson = diversity(div_counts, index = "simpson"),
+  evenness = diversity(div_counts, index = "shannon") / log(specnumber(div_counts))
+)
+
+
+```
+
+Splitting back into HC and LC
+```{r}
+diversity_summary_HC <- diversity_summary %>% filter(sample_group %in% c("Smartseq_HC", "Sanger_HC"))
+diversity_summary_LC <- diversity_summary %>% filter(sample_group %in% c("Smartseq_LC", "Sanger_LC"))
+
+```
+
+Preparing for bootstrapping
+```{r}
+# Convert to long format for bootstrapping
+long_d <- all_data %>%
+  dplyr::filter(count > 0) %>%
+  uncount(count)  # One row per gene occurrence
+
+# Now split into HC and LC for separate bootstrapping
+long_d_HC <- long_d %>% filter(sample_group %in% c("Smartseq_HC", "Sanger_HC"))
+long_d_LC <- long_d %>% filter(sample_group %in% c("Smartseq_LC", "Sanger_LC"))
+
+
+```
+Applying for bootstrap_shannon()
+```{r}
+# Define the bootstrap function if not already defined
+bootstrap_shannon <- function(data, n = 1000) {
+  results <- list()
+  
+  for (grp in unique(data$sample_group)) {
+    subset_data <- data %>% filter(sample_group == grp)
+    gene_ids <- subset_data$v_call_gene
+    
+    shannon_vals <- replicate(n, {
+      sampled <- sample(gene_ids, replace = TRUE)
+      diversity(table(sampled), index = "shannon")
+    })
+    
+    results[[grp]] <- shannon_vals
+  }
+  
+  return(results)
+}
+
+# Run bootstrapping for HC and LC
+boot_results_HC <- bootstrap_shannon(long_d_HC, n = 1000)
+boot_results_LC <- bootstrap_shannon(long_d_LC, n = 1000)
+
+
+```
+Tidying
+```{r}
+# Bind results into data frames
+bootstrap_df_HC <- bind_rows(lapply(names(boot_results_HC), function(grp) {
+  data.frame(shannon = boot_results_HC[[grp]], sample_group = grp)
+}))
+
+bootstrap_df_LC <- bind_rows(lapply(names(boot_results_LC), function(grp) {
+  data.frame(shannon = boot_results_LC[[grp]], sample_group = grp)
+}))
+
+
+```
+
+```{r}
+#heavy chain
+wilcox.test(shannon ~ sample_group, data = bootstrap_df_HC)
+hc_test <- wilcox.test(shannon ~ sample_group, data = bootstrap_df_HC)
+hc_pval <- hc_test$p.value
+```
+```{r}
+#heavy chain
+table(bootstrap_df_HC$sample_group)
+table(bootstrap_df_LC$sample_group)
+
+summary(bootstrap_df_HC$shannon)
+summary(bootstrap_df_LC$shannon)
+
+wilcox.test(shannon ~ sample_group, data = bootstrap_df_HC)
+wilcox.test(shannon ~ sample_group, data = bootstrap_df_LC)
+
+with(bootstrap_df_LC, all(shannon[sample_group == "Sanger_LC"] < shannon[sample_group == "Smartseq_LC"]))
+
+library(dplyr)
+
+# For HC:
+bootstrap_df_HC %>%
+  group_by(sample_group) %>%
+  summarise(median_shannon = median(shannon))
+
+# For LC:
+bootstrap_df_LC %>%
+  group_by(sample_group) %>%
+  summarise(median_shannon = median(shannon))
+
+
+```
+
+Plot for HC
+```{r}
+ggplot(bootstrap_df_HC, aes(x = sample_group, y = shannon, fill = sample_group)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Bootstrapped Shannon Diversity - Heavy Chain", y = "Shannon Index", x = NULL) +
+  stat_compare_means(method = "wilcox.test", label = "p.format") +
+  theme_bw() +
+  scale_fill_lancet()
+
+wilcox.test(shannon ~ sample_group, data = bootstrap_df_HC)
+
+```
+Plot for LC
+```{r}
+ggplot(bootstrap_df_LC, aes(x = sample_group, y = shannon, fill = sample_group)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Bootstrapped Shannon Diversity - Heavy Chain", y = "Shannon Index", x = NULL) +
+  stat_compare_means(method = "wilcox.test", label = "p.format") +
+  theme_bw() +
+  scale_fill_lancet()
+
+wilcox.test(shannon ~ sample_group, data = bootstrap_df_LC)
+
+```
+
+```{r}
+library(ggplot2)
+
+# Assuming you have the bootstrapped dataframes bootstrap_df_HC and bootstrap_df_LC
+
+# Combine both HC and LC results into a single data frame with an additional column indicating HC vs LC
+bootstrap_df_combined <- bind_rows(
+  bootstrap_df_HC %>% mutate(type = "HC"),
+  bootstrap_df_LC %>% mutate(type = "LC")
+)
+
+comparisons = list(c("Smartseq_HC", "Sanger_HC"), c("Smartseq_LC", "Sanger_LC"))
+# Now create the plot using ggplot2 and facet_wrap to separate by type
+ggplot(bootstrap_df_combined, aes(x = sample_group, y = shannon, fill = sample_group)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Bootstrapped Shannon Diversity",
+       y = "Shannon Diversity Index",
+       x = "Methods") +
+  stat_compare_means(comparisons = comparisons,
+  method = "wilcox.test") +
+  theme_bw() +
+  scale_fill_lancet() +
+  facet_wrap(~ type, scales = "free_x", nrow = 1) +  # This will place them side-by-side in a row
+  theme(
+    aspect.ratio = 1,
+    legend.position = "none",  # Remove the legend
+     # Ensures both plots maintain aspect ratio
+  )
+stat_compare_means(comparisons = comparisons,
+  method = "wilcox.test")
+#save
+ggsave("~/Documents/Sequencing/Clonotype_diversity_indexes/bootstrapped_shannon_diversity.png", width = 4, height = 3, dpi = 300)
+```
+```{r}
+ggplot(bootstrap_df_combined, aes(x = sample_group, y = shannon, fill = sample_group)) +
+  geom_boxplot(width = 0.5, position = position_dodge(width = 0.8), outlier.shape = NA) +  # Similar boxplot settings
+  stat_compare_means(
+    comparisons = comparisons,
+    method = "wilcox.test",
+    label = "p.format",
+    hide.ns = TRUE  # Hides non-significant comparisons
+  ) +
+  scale_fill_lancet() +
+  facet_wrap(~ type, scales = "free_x", nrow = 1) +  # Ensures the plots are placed side by side
+  theme_bw() +
+  labs(
+    title = "Bootstrapped Shannon Diversity",
+    y = "Shannon Diversity Index",
+    x = "Methods"
+  ) +
+  theme(
+    aspect.ratio = 1,  # Ensures both plots maintain aspect ratio
+    legend.position = "none",  # Removes the legend
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 14),  # Rotates and sizes x-axis text
+    axis.text.y = element_text(size = 14),  # Sets size for y-axis text
+    axis.title.y = element_text(size = 16),  # Increases y-axis title size
+    strip.text = element_text(size = 16, face = "bold"),  # Makes facet titles bold and larger
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),  # Centered plot title with larger font size
+    plot.margin = margin(10, 10, 10, 10)  # Increases margin for better visibility
+  ) +
+  coord_cartesian(ylim = c(0, 6))  # Optional: adjust y-axis range for better visualization
+
+
+```
+
