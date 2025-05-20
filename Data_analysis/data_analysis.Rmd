@@ -18,9 +18,6 @@ library(ggsci)
 ```{r}
 
 
-# Assuming your data frame is called `data` with columns:
-# 'animal', 'group', 'D0', 'D16', 'D66', 'D99', 'D176'
-
 # 1. Reshape the data from wide to long format
 flow_data_long <- flow_data %>%
   select(-D66) %>%
